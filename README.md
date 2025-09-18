@@ -363,7 +363,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Documentation**: [Full Documentation](docs/)
+- **Documentation Slide Canva**: [Full Documentation](https://www.canva.com/design/DAGzTpLdOSc/4i0IdBI577rFh4nSrodgZA/edit?utm_content=DAGzTpLdOSc&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton)
 - **Issues**: [GitHub Issues](https://github.com/Amity808/fhe-hook-template/confidential-rebalancing-hook/issues)
 - **Discord**: [Community Discord](https://discord.gg/your-discord)
 - **Email**: bolarinwamuhdsodiq0@gmail.com
