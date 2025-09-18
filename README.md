@@ -364,7 +364,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - **Documentation**: [Full Documentation](docs/)
-- **Issues**: [GitHub Issues](https://github.com/your-org/confidential-rebalancing-hook/issues)
+- **Issues**: [GitHub Issues](https://github.com/Amity808/fhe-hook-template/confidential-rebalancing-hook/issues)
 - **Discord**: [Community Discord](https://discord.gg/your-discord)
 - **Email**: bolarinwamuhdsodiq0@gmail.com
 
