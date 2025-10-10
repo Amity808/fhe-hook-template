@@ -54,7 +54,6 @@ contract ConfidentialRebalancingHookTest is Test, Fixtures {
         // Create the pool manager, utility routers, and test tokens
         deployFreshManagerAndRouters();
 
-        // Deploy FHE tokens like Counter test
         bytes memory token0Args = abi.encode("TOKEN0", "TOK0");
         deployCodeTo(
             "HybridFHERC20.sol:HybridFHERC20",
