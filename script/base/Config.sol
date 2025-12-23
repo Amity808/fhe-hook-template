@@ -7,10 +7,19 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
 /// @notice Shared configuration between scripts
 contract Config {
-    /// @dev populated with default anvil addresses
-    IERC20 constant token0 = IERC20(address(0x0165878A594ca255338adfa4d48449f69242Eb8F));
-    IERC20 constant token1 = IERC20(address(0xa513E6E4b8f2a923D98304ec87F64353C4D5C853));
-    IHooks constant hookContract = IHooks(address(0x0));
+    /// @dev Deployed mock tokens on Sepolia
+    /// MockTokenA (token0): 0x2794a0b7187BFCd81D2b6d05E8a6e6cAE3F97fFa
+    /// MockTokenB (token1): 0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06
+    /// Tokens must be sorted: token0 address < token1 address
+    IERC20 constant token0 =
+        IERC20(address(0x2794a0b7187BFCd81D2b6d05E8a6e6cAE3F97fFa));
+    IERC20 constant token1 =
+        IERC20(address(0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06));
+
+    /// @dev Hook contract address - set to deployed ConfidentialRebalancingHook on Sepolia
+    /// Deployed at: 0xd6F8dDC186434d891B8653FF2083436067114aC0
+    IHooks constant hookContract =
+        IHooks(address(0xd6F8dDC186434d891B8653FF2083436067114aC0));
 
     Currency constant currency0 = Currency.wrap(address(token0));
     Currency constant currency1 = Currency.wrap(address(token1));

@@ -5,15 +5,31 @@ pragma solidity ^0.8.24;
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {
+    SwapParams,
+    ModifyLiquidityParams
+} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {
+    BeforeSwapDelta,
+    BeforeSwapDeltaLibrary,
+    toBeforeSwapDelta
+} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
 // FHE Imports
-import {FHE, euint32, euint64, euint128, euint256, ebool, eaddress, InEuint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {
+    FHE,
+    euint32,
+    euint64,
+    euint128,
+    euint256,
+    ebool,
+    eaddress,
+    InEuint128
+} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 /**
  * @title ConfidentialRebalancingHook
@@ -227,8 +243,15 @@ contract ConfidentialRebalancingHook is BaseHook {
         _;
     }
 
-    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {
+    constructor(
+        IPoolManager _poolManager,
+        address _initialGovernance
+    ) BaseHook(_poolManager) {
         authorizedExecutors[msg.sender] = true;
+        // Allow setting initial governance if provided
+        if (_initialGovernance != address(0)) {
+            governance = _initialGovernance;
+        }
     }
 
     function _safeFHEOperation(
@@ -310,6 +333,12 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(encMaxSlippage);
         FHE.allowThis(encPriorityFee);
 
+        // Allow strategy owner to decrypt/seal these encrypted execution parameters via cofhejs
+        FHE.allow(encExecutionWindow, msg.sender);
+        FHE.allow(encSpreadBlocks, msg.sender);
+        FHE.allow(encMaxSlippage, msg.sender);
+        FHE.allow(encPriorityFee, msg.sender);
+
         EncryptedExecutionParams memory execParams = EncryptedExecutionParams({
             executionWindow: encExecutionWindow,
             spreadBlocks: encSpreadBlocks,
@@ -352,6 +381,11 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(encTargetPercentage);
         FHE.allowThis(encMinThreshold);
         FHE.allowThis(encMaxThreshold);
+
+        // Allow strategy owner to decrypt/seal these encrypted values via cofhejs
+        FHE.allow(encTargetPercentage, strategies[strategyId].owner);
+        FHE.allow(encMinThreshold, strategies[strategyId].owner);
+        FHE.allow(encMaxThreshold, strategies[strategyId].owner);
 
         // Find existing allocation or create new one
         bool found = false;
@@ -406,8 +440,16 @@ contract ConfidentialRebalancingHook is BaseHook {
                 _isExecutionReady(strategyId) && strategies[strategyId].isActive
             ) {
                 _calculateTradeDeltas(strategyId);
+
+                // Initialize trade deltas to zero if they don't exist
                 euint128 delta0 = tradeDeltas[strategyId][key.currency0];
                 euint128 delta1 = tradeDeltas[strategyId][key.currency1];
+
+                // Ensure deltas are initialized (accessing non-existent mapping returns zero, but we need to allow it)
+                euint128 zero = FHE.asEuint128(0);
+                FHE.allowThis(zero);
+                FHE.allowThis(delta0);
+                FHE.allowThis(delta1);
 
                 // Check if rebalancing is needed for these currencies
                 if (
@@ -902,6 +944,7 @@ contract ConfidentialRebalancingHook is BaseHook {
     /**
      * @dev Update encrypted position for a currency in a strategy
      * This function is called internally to maintain encrypted position data
+     * Allows both the contract (allowThis) and the strategy owner (allow) to access the encrypted value
      */
     function _updateEncryptedPosition(
         bytes32 strategyId,
@@ -909,7 +952,10 @@ contract ConfidentialRebalancingHook is BaseHook {
         euint128 newPosition
     ) internal {
         encryptedPositions[strategyId][currency] = newPosition;
+        // Allow contract to operate on this encrypted value
         FHE.allowThis(newPosition);
+        // Allow strategy owner to decrypt/seal this encrypted value via cofhejs
+        FHE.allow(newPosition, strategies[strategyId].owner);
     }
 
     /**
@@ -999,6 +1045,13 @@ contract ConfidentialRebalancingHook is BaseHook {
 
             Currency currency = allocations[i].currency;
             euint128 currentPosition = encryptedPositions[strategyId][currency];
+
+            // Initialize position to zero if uninitialized (check by comparing with itself)
+            // If position is uninitialized, FHE operations will fail, so we initialize it
+            euint128 zero = FHE.asEuint128(0);
+            FHE.allowThis(zero);
+            FHE.allowThis(currentPosition);
+
             euint128 totalValue = _calculateTotalPortfolioValue(strategyId);
 
             // Grant access to the values for FHE operations
@@ -1053,8 +1106,7 @@ contract ConfidentialRebalancingHook is BaseHook {
             FHE.allowThis(tradeDelta);
 
             // Use FHE.select to conditionally apply the trade delta
-            euint128 zero = FHE.asEuint128(0);
-            FHE.allowThis(zero);
+            // (zero is already declared earlier in the function)
 
             // Select trade delta if rebalancing needed, otherwise zero
             euint128 conditionalTradeDelta = FHE.select(
@@ -1084,6 +1136,13 @@ contract ConfidentialRebalancingHook is BaseHook {
             strategyId
         ];
 
+        // Initialize with zero if no allocations exist
+        if (allocations.length == 0) {
+            totalValue = FHE.asEuint128(0);
+            FHE.allowThis(totalValue);
+            return totalValue;
+        }
+
         // Initialize with the first active position
         bool firstPosition = true;
         for (uint256 i = 0; i < allocations.length; i++) {
@@ -1092,24 +1151,27 @@ contract ConfidentialRebalancingHook is BaseHook {
                     allocations[i].currency
                 ];
 
+                // CRITICAL: Must allow access to encrypted position before FHE operations
+                FHE.allowThis(position);
+
                 if (firstPosition) {
                     totalValue = position;
+                    FHE.allowThis(totalValue);
                     firstPosition = false;
                 } else {
+                    // Must allow access to totalValue before adding
+                    FHE.allowThis(totalValue);
                     totalValue = FHE.add(totalValue, position);
+                    FHE.allowThis(totalValue);
                 }
             }
         }
 
-        // Handle edge case where no active allocations exist
+        // Handle edge case where no active allocations exist - initialize to zero
         if (firstPosition) {
-            for (uint256 i = 0; i < allocations.length; i++) {
-                euint128 position = encryptedPositions[strategyId][
-                    allocations[i].currency
-                ];
-                totalValue = position;
-                break;
-            }
+            totalValue = FHE.asEuint128(0);
+            FHE.allowThis(totalValue);
+            return totalValue;
         }
 
         return totalValue;
@@ -1397,12 +1459,12 @@ contract ConfidentialRebalancingHook is BaseHook {
     }
 
     /**
-     * @dev Set governance address (only callable by current governance or contract owner initially)
+     * @dev Set governance address (only callable by current governance or authorized executor initially)
      */
     function setGovernance(address _governance) external {
         require(
             msg.sender == governance ||
-                (governance == address(0) && msg.sender == address(this)),
+                (governance == address(0) && authorizedExecutors[msg.sender]),
             "Not authorized to set governance"
         );
         governance = _governance;
@@ -1434,6 +1496,12 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(encSpreadBlocks);
         FHE.allowThis(encMaxSlippage);
         FHE.allowThis(encPriorityFee);
+
+        // Allow governance (strategy owner) to decrypt/seal these encrypted execution parameters via cofhejs
+        FHE.allow(encExecutionWindow, governance);
+        FHE.allow(encSpreadBlocks, governance);
+        FHE.allow(encMaxSlippage, governance);
+        FHE.allow(encPriorityFee, governance);
 
         EncryptedExecutionParams memory execParams = EncryptedExecutionParams({
             executionWindow: encExecutionWindow,
