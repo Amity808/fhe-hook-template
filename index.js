@@ -650,38 +650,6 @@ async function performSwap(
       (errorMsg.includes("revert") && simError.data === "0x")
     ) {
       console.error("\n    ⚠ DIAGNOSIS: Swap validation failed!");
-      console.error("    The generic 'require(false)' error typically means:");
-      console.error(
-        "      1. Pool was never created (run 01a_CreatePoolOnly.s.sol)"
-      );
-      console.error("      2. Pool exists but has NO LIQUIDITY (MOST COMMON!)");
-      console.error("      3. Pool exists but wasn't initialized");
-      console.error(
-        "      4. Pool parameters don't match (fee, tickSpacing, hooks)"
-      );
-      console.error(
-        "      5. Hook's beforeSwap is reverting (check hook logic)"
-      );
-      console.error("      6. Swap amount exceeds available liquidity");
-      console.error("\n    SOLUTION OPTIONS:");
-      console.error("      Option A - All-in-one (recommended):");
-      console.error(
-        "        forge script script/01_CreatePoolAndMintLiquidity.s.sol --rpc-url $RPC_URL --broadcast"
-      );
-      console.error("      Option B - Step by step:");
-      console.error(
-        "        1. Create pool: forge script script/01a_CreatePoolOnly.s.sol --rpc-url $RPC_URL --broadcast"
-      );
-      console.error(
-        "        2. Add liquidity: forge script script/02_AddLiquidity.s.sol --rpc-url $RPC_URL --broadcast"
-      );
-      console.error(
-        "\n    IMPORTANT: If pool already exists and liquidity was added, the issue might be:"
-      );
-      console.error(
-        "      - Hook's beforeSwap reverting due to FHE operations"
-      );
-      console.error("      - Swap amount too large for available liquidity");
       console.error("      - Try a smaller swap amount or check hook logic");
     } else if (
       errorMsg.includes("insufficient liquidity") ||
@@ -699,13 +667,6 @@ async function performSwap(
       console.error(
         "\n    ⚠ Could not identify specific issue from error message."
       );
-      console.error(
-        "    The low gas usage (28000) suggests an early validation failure."
-      );
-      console.error("    This is likely:");
-      console.error("      1. Pool not initialized (most common)");
-      console.error("      2. Invalid swap parameters");
-      console.error("      3. Hook validation failure");
     }
 
     console.error(
