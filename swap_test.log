@@ -1,0 +1,49 @@
+=== FHE Hook Frontend Integration Example ===
+
+⚠️  IMPORTANT: Ensure the pool exists, is initialized, AND has liquidity!
+   If you get 'require(false)' errors during swap, it's likely missing liquidity.
+
+   Quick fix - Add liquidity:
+   forge script script/02_AddLiquidity.s.sol --rpc-url $RPC_URL --broadcast
+
+   Or create pool + liquidity together:
+   forge script script/01_CreatePoolAndMintLiquidity.s.sol --rpc-url $RPC_URL --broadcast
+
+Configuration:
+  RPC URL: https://sepolia.infura.io/v3/709bdd438a58422b891043c58e636a64
+  Environment: TESTNET
+  Hook Address: 0x17EEca526800bAcEF061D22105DC2e14F05b0ac0
+  Pool Manager: 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543
+  Token0: 0x2794a0b7187BFCd81D2b6d05E8a6e6cAE3F97fFa
+  Token1: 0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06
+Initializing provider and wallet...
+  Wallet address: 0x8822F2965090Ddc102F7de354dfd6E642C090269
+Initializing cofhejs client...
+(node:54536) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+  Connected to network: sepolia (Chain ID: 11155111)
+✓ cofhejs initialized successfully
+
+=== Creating Strategy with Encrypted Parameters ===
+Strategy does not exist, will create new one...
+Encrypting execution parameters...
+  Encryption State: extract
+  Encryption State: pack
+  Encryption State: prove
+  Encryption State: verify
+  Encryption State: replace
+  Encryption State: done
+✓ Values encrypted successfully
+  Using encryptedValues.data as array
+Calling createStrategy on contract...
+Strategy already exists, skipping creation...
+
+Using existing strategy for remaining operations...
+
+=== Setting Target Allocations ===
+
+=== Setting Target Allocation ===
+Encrypting allocation parameters...
+  Encryption State: extract
+  Encryption State: pack
+  Encryption State: prove

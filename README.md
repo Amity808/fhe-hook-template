@@ -1,4 +1,4 @@
-# ConfidentialRebalancingHook
+# Umbra finance
 
 **Confidential Multi-Asset Rebalancing on Uniswap v4 with Fully Homomorphic Encryption**
 
@@ -12,7 +12,7 @@
 
 ## 🎯 Overview
 
-ConfidentialRebalancingHook is a production-ready Uniswap v4 hook that enables **institutional-grade confidential multi-asset rebalancing** using Fully Homomorphic Encryption (FHE). This revolutionary solution eliminates alpha decay from copycat trading and front-running while maintaining optimal execution for large-scale strategies.
+Umbra finance is a production-ready Uniswap v4 hook that enables **institutional-grade confidential multi-asset rebalancing** using Fully Homomorphic Encryption (FHE). This revolutionary solution eliminates alpha decay from copycat trading and front-running while maintaining optimal execution for large-scale strategies.
 
 ### The Problem We Solve
 
@@ -107,9 +107,9 @@ modifier mevProtection() {
 ### Comprehensive Test Suite
 
 ```bash
-$ forge test --match-contract ConfidentialRebalancingHookTest
+$ forge test --match-contract Umbra financeTest
 
-Ran 28 tests for test/ConfidentialRebalancingHook.t.sol:ConfidentialRebalancingHookTest
+Ran 28 tests for test/Umbra finance.t.sol:Umbra financeTest
 [PASS] testAccessControl() (gas: 835169)
 [PASS] testActualSwapExecution() (gas: 2205823)
 [PASS] testAuditTrailGeneration() (gas: 14513197)
@@ -184,7 +184,7 @@ forge test
 
 ```solidity
 // Deploy the hook
-ConfidentialRebalancingHook hook = new ConfidentialRebalancingHook(poolManager);
+Umbra finance hook = new Umbra finance(poolManager);
 
 // Create a strategy
 bytes32 strategyId = keccak256("my-strategy");

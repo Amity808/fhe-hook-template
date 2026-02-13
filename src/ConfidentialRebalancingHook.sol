@@ -424,7 +424,6 @@ contract ConfidentialRebalancingHook is BaseHook {
     )
         internal
         override
-        nonReentrant(bytes32(uint256(PoolId.unwrap(key.toId()))))
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId poolId = key.toId();
@@ -439,56 +438,31 @@ contract ConfidentialRebalancingHook is BaseHook {
             if (
                 _isExecutionReady(strategyId) && strategies[strategyId].isActive
             ) {
-                _calculateTradeDeltas(strategyId);
-
-                // Initialize trade deltas to zero if they don't exist
-                euint128 delta0 = tradeDeltas[strategyId][key.currency0];
-                euint128 delta1 = tradeDeltas[strategyId][key.currency1];
-
-                // Ensure deltas are initialized (accessing non-existent mapping returns zero, but we need to allow it)
-                euint128 zero = FHE.asEuint128(0);
-                FHE.allowThis(zero);
-                FHE.allowThis(delta0);
-                FHE.allowThis(delta1);
-
-                // Check if rebalancing is needed for these currencies
-                if (
-                    _hasActiveAllocation(strategyId, key.currency0) ||
-                    _hasActiveAllocation(strategyId, key.currency1)
-                ) {
-                    // Use encrypted timing parameters to determine execution
-                    EncryptedExecutionParams memory execParams = strategies[
-                        strategyId
-                    ].executionParams;
-
-                    // Apply FHE operations for confidential rebalancing
-                    if (
-                        _shouldExecuteConfidentialRebalancing(
-                            strategyId,
-                            delta0,
-                            delta1,
-                            execParams
-                        )
-                    ) {
-                        // 6. Check if execution should be spread across multiple blocks
-                        if (_shouldSpreadExecution(strategyId)) {
-                            // For multi-block execution, only update lastRebalanceBlock on the first execution
-                            if (
-                                strategies[strategyId].lastRebalanceBlock == 0
-                            ) {
-                                strategies[strategyId]
-                                    .lastRebalanceBlock = block.number;
-                            }
-                        } else {
-                            // Complete execution - update lastRebalanceBlock to mark completion
-                            strategies[strategyId].lastRebalanceBlock = block
-                                .number;
-                        }
-
-                        emit RebalancingExecuted(strategyId, block.number);
-
-                        // For now, we continue with standard execution but log the rebalancing
+                // Try to calculate trade deltas, but don't revert if it fails
+                // This prevents FHE operation failures from blocking swaps
+                try this._calculateTradeDeltasExternal(strategyId) returns (bool success) {
+                    // Trade deltas calculated successfully
+                    if (!success) {
+                        emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Calculation returned false");
+                        continue;
                     }
+                } catch Error(string memory reason) {
+                    emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", reason);
+                    continue;
+                } catch (bytes memory) {
+                    emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Unknown error");
+                    continue;
+                }
+
+                // Try to execute FHE rebalancing operations, but don't revert if they fail
+                try this._executeFHERebalancingOperations(strategyId, key) {
+                    // FHE operations executed successfully
+                } catch Error(string memory reason) {
+                    emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", reason);
+                    continue;
+                } catch (bytes memory) {
+                    emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", "Unknown error");
+                    continue;
                 }
             }
         }
@@ -509,7 +483,6 @@ contract ConfidentialRebalancingHook is BaseHook {
     )
         internal
         override
-        nonReentrant(bytes32(uint256(PoolId.unwrap(key.toId()))))
         returns (bytes4, int128)
     {
         PoolId poolId = key.toId();
@@ -659,9 +632,10 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(currentSlippage);
 
         // Compare with encrypted maxSlippage
+        // Check if currentSlippage < maxSlippage (slippage is within acceptable limit)
         ebool slippageWithinLimit = FHE.lt(
-            execParams.maxSlippage,
-            currentSlippage
+            currentSlippage,
+            execParams.maxSlippage
         );
         FHE.allowThis(slippageWithinLimit);
 
@@ -736,8 +710,8 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(windowEnd);
 
         // 5. Check if we're within the execution window
-        // FHE.le doesn't exist, use FHE.lt with swapped operands
-        ebool withinWindow = FHE.lt(windowEnd, currentBlock);
+        // Check if currentBlock < windowEnd (we haven't passed the deadline)
+        ebool withinWindow = FHE.lt(currentBlock, windowEnd);
         FHE.allowThis(withinWindow);
 
         // 6. Combine conditions: past start AND within window
@@ -754,8 +728,8 @@ contract ConfidentialRebalancingHook is BaseHook {
         euint128 adjustedWindowEnd = FHE.add(windowEnd, randomOffset);
         FHE.allowThis(adjustedWindowEnd);
 
-        // FHE.le doesn't exist, use FHE.lt with swapped operands
-        ebool withinAdjustedWindow = FHE.lt(adjustedWindowEnd, currentBlock);
+        // Check if currentBlock < adjustedWindowEnd (still within randomized window)
+        ebool withinAdjustedWindow = FHE.lt(currentBlock, adjustedWindowEnd);
         FHE.allowThis(withinAdjustedWindow);
 
         // 8. Final timing check with randomization
@@ -1040,6 +1014,11 @@ contract ConfidentialRebalancingHook is BaseHook {
             strategyId
         ];
 
+        // Safety check: Return early if no allocations exist
+        if (allocations.length == 0) {
+            return false;
+        }
+
         for (uint256 i = 0; i < allocations.length; i++) {
             if (!allocations[i].isActive) continue;
 
@@ -1186,6 +1165,78 @@ contract ConfidentialRebalancingHook is BaseHook {
     ) internal returns (euint128) {
         // Calculate signed deviation: target - current
         return FHE.sub(target, current);
+    }
+
+    /**
+     * @dev External wrapper for _calculateTradeDeltas to enable try-catch
+     * @notice This allows _beforeSwap to gracefully handle FHE operation failures
+     */
+    function _calculateTradeDeltasExternal(
+        bytes32 strategyId
+    ) external returns (bool) {
+        require(msg.sender == address(this), "Only callable internally");
+        return _calculateTradeDeltas(strategyId);
+    }
+
+    /**
+     * @dev External wrapper for FHE rebalancing operations to enable try-catch
+     * @notice This allows _beforeSwap to gracefully handle FHE operation failures
+     */
+    function _executeFHERebalancingOperations(
+        bytes32 strategyId,
+        PoolKey calldata key
+    ) external {
+        require(msg.sender == address(this), "Only callable internally");
+        
+        // Initialize trade deltas to zero if they don't exist
+        euint128 delta0 = tradeDeltas[strategyId][key.currency0];
+        euint128 delta1 = tradeDeltas[strategyId][key.currency1];
+
+        // Ensure deltas are initialized (accessing non-existent mapping returns zero, but we need to allow it)
+        euint128 zero = FHE.asEuint128(0);
+        FHE.allowThis(zero);
+        FHE.allowThis(delta0);
+        FHE.allowThis(delta1);
+
+        // Check if rebalancing is needed for these currencies
+        if (
+            _hasActiveAllocation(strategyId, key.currency0) ||
+            _hasActiveAllocation(strategyId, key.currency1)
+        ) {
+            // Use encrypted timing parameters to determine execution
+            EncryptedExecutionParams memory execParams = strategies[
+                strategyId
+            ].executionParams;
+
+            // Apply FHE operations for confidential rebalancing
+            if (
+                _shouldExecuteConfidentialRebalancing(
+                    strategyId,
+                    delta0,
+                    delta1,
+                    execParams
+                )
+            ) {
+                // 6. Check if execution should be spread across multiple blocks
+                if (_shouldSpreadExecution(strategyId)) {
+                    // For multi-block execution, only update lastRebalanceBlock on the first execution
+                    if (
+                        strategies[strategyId].lastRebalanceBlock == 0
+                    ) {
+                        strategies[strategyId]
+                            .lastRebalanceBlock = block.number;
+                    }
+                } else {
+                    // Complete execution - update lastRebalanceBlock to mark completion
+                    strategies[strategyId].lastRebalanceBlock = block
+                        .number;
+                }
+
+                emit RebalancingExecuted(strategyId, block.number);
+
+                // For now, we continue with standard execution but log the rebalancing
+            }
+        }
     }
 
     /**
@@ -1427,6 +1478,26 @@ contract ConfidentialRebalancingHook is BaseHook {
         bytes32 strategyId,
         Currency currency
     ) external view returns (euint128 position) {
+        return encryptedPositions[strategyId][currency];
+    }
+
+    /**
+     * @dev Get sealed encrypted position for client-side unsealing
+     * @notice Returns the encrypted position handle for unsealing with cofhejs
+     * @param strategyId The strategy ID
+     * @param currency The currency to get position for
+     * @return The encrypted position handle (CtHash) for unsealing
+     * 
+     * Requirements:
+     * - Caller must have been granted access via FHE.allow() or FHE.allowSender()
+     * - Position must have been set via setEncryptedPosition() or updated via swap
+     */
+    function getSealedPosition(
+        bytes32 strategyId,
+        Currency currency
+    ) external view returns (euint128) {
+        // Return the encrypted handle directly - cofhejs will handle unsealing
+        // with the permit that grants access to this caller
         return encryptedPositions[strategyId][currency];
     }
 
