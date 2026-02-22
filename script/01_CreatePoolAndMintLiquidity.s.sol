@@ -175,7 +175,7 @@ contract CreatePoolAndAddLiquidityScript is Script, Constants, Config {
         // Now add liquidity (pool is either newly initialized or already exists)
         posm.modifyLiquidities{value: valueToPass}(
             abi.encode(actions, mintParams),
-            block.timestamp + 60
+            block.timestamp + 3600
         );
 
         vm.stopBroadcast();

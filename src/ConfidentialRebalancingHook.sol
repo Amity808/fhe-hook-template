@@ -420,7 +420,7 @@ contract ConfidentialRebalancingHook is BaseHook {
         address, // sender
         PoolKey calldata key,
         SwapParams calldata, // params
-        bytes calldata // hookData
+        bytes calldata hookData
     )
         internal
         override
@@ -428,41 +428,19 @@ contract ConfidentialRebalancingHook is BaseHook {
     {
         PoolId poolId = key.toId();
 
-        // Iterate through strategies for this pool
-        bytes32[] memory strategyIds = poolStrategies[poolId];
-
-        for (uint256 i = 0; i < strategyIds.length; i++) {
-            bytes32 strategyId = strategyIds[i];
-
-            // Check if strategy is ready for rebalancing execution
-            if (
-                _isExecutionReady(strategyId) && strategies[strategyId].isActive
-            ) {
-                // Try to calculate trade deltas, but don't revert if it fails
-                // This prevents FHE operation failures from blocking swaps
-                try this._calculateTradeDeltasExternal(strategyId) returns (bool success) {
-                    // Trade deltas calculated successfully
-                    if (!success) {
-                        emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Calculation returned false");
-                        continue;
-                    }
-                } catch Error(string memory reason) {
-                    emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", reason);
-                    continue;
-                } catch (bytes memory) {
-                    emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Unknown error");
-                    continue;
-                }
-
-                // Try to execute FHE rebalancing operations, but don't revert if they fail
-                try this._executeFHERebalancingOperations(strategyId, key) {
-                    // FHE operations executed successfully
-                } catch Error(string memory reason) {
-                    emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", reason);
-                    continue;
-                } catch (bytes memory) {
-                    emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", "Unknown error");
-                    continue;
+        // Check if a specific strategyId is provided in hookData
+        if (hookData.length == 32) {
+            bytes32 strategyId = abi.decode(hookData, (bytes32));
+            if (strategies[strategyId].isActive) {
+                _processStrategy(strategyId, key);
+            }
+        } else {
+            // Iterate through strategies for this pool (legacy behavior)
+            bytes32[] memory strategyIds = poolStrategies[poolId];
+            for (uint256 i = 0; i < strategyIds.length; i++) {
+                bytes32 strategyId = strategyIds[i];
+                if (strategies[strategyId].isActive) {
+                    _processStrategy(strategyId, key);
                 }
             }
         }
@@ -473,6 +451,39 @@ contract ConfidentialRebalancingHook is BaseHook {
             0
         );
     }
+
+    /**
+     * @dev Process a specific strategy during a swap
+     */
+    function _processStrategy(bytes32 strategyId, PoolKey calldata key) internal {
+        // Check if strategy is ready for rebalancing execution
+        if (_isExecutionReady(strategyId)) {
+            // Try to calculate trade deltas
+            try this._calculateTradeDeltasExternal(strategyId) returns (bool success) {
+                if (!success) {
+                    emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Calculation returned false");
+                    return;
+                }
+            } catch Error(string memory reason) {
+                emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", reason);
+                return;
+            } catch (bytes memory) {
+                emit FHEOperationFailed(strategyId, "_calculateTradeDeltas", "Unknown error");
+                return;
+            }
+
+            // Try to execute FHE rebalancing operations
+            try this._executeFHERebalancingOperations(strategyId, key) {
+                // FHE operations executed successfully
+            } catch Error(string memory reason) {
+                emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", reason);
+            } catch (bytes memory) {
+                emit FHEOperationFailed(strategyId, "_executeFHERebalancingOperations", "Unknown error");
+            }
+        }
+    }
+
+
 
     function _afterSwap(
         address, // sender
@@ -1273,6 +1284,11 @@ contract ConfidentialRebalancingHook is BaseHook {
         bytes32 strategyId
     ) internal view returns (bool ready) {
         RebalancingStrategy memory strategy = strategies[strategyId];
+
+        // If strategy has never been executed, it's always ready for first execution
+        if (strategy.lastRebalanceBlock == 0) {
+            return true;
+        }
 
         // Check if enough blocks have passed since last rebalance
         if (

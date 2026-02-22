@@ -17,9 +17,9 @@ contract Config {
         IERC20(address(0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06));
 
     /// @dev Hook contract address - set to deployed ConfidentialRebalancingHook on Sepolia
-    /// Deployed at: 0x29917CE538f0CCbd370C9db265e721595Af14Ac0 (final with all FHE fixes)
+    /// Deployed at: 0x797283907437277Ff05FF929c871f7517BdecaC0 (with FHE timing fix)
     IHooks constant hookContract =
-        IHooks(address(0x29917CE538f0CCbd370C9db265e721595Af14Ac0));
+        IHooks(address(0x797283907437277Ff05FF929c871f7517BdecaC0));
 
     Currency constant currency0 = Currency.wrap(address(token0));
     Currency constant currency1 = Currency.wrap(address(token1));

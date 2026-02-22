@@ -5,6 +5,25 @@
 const { cofhejs, FheTypes, Encryptable } = require("cofhejs/node");
 const { ethers } = require("ethers");
 
+// Mock localStorage for Node.js environment (required by cofhejs/zustand)
+if (typeof global.localStorage === "undefined") {
+  global.localStorage = {
+    _data: {},
+    setItem: function (id, val) {
+      this._data[id] = String(val);
+    },
+    getItem: function (id) {
+      return this._data[id] || null;
+    },
+    removeItem: function (id) {
+      delete this._data[id];
+    },
+    clear: function () {
+      this._data = {};
+    },
+  };
+}
+
 const CONFIG = {
   // RPC endpoint - Sepolia testnet with Fhenix CoFHE support
   RPC_URL:
@@ -17,13 +36,13 @@ const CONFIG = {
 
   // Contract addresses from deployment (Sepolia chain ID: 11155111)
   HOOK_ADDRESS:
-    process.env.HOOK_ADDRESS || "0x29917CE538f0CCbd370C9db265e721595Af14Ac0", // ConfidentialRebalancingHook (final with all FHE fixes)
+    process.env.HOOK_ADDRESS || "0x797283907437277Ff05FF929c871f7517BdecaC0", // ConfidentialRebalancingHook with FHE timing fix
   POOL_MANAGER_ADDRESS:
     process.env.POOL_MANAGER_ADDRESS ||
     "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543", // Uniswap V4 PoolManager
   SWAP_ROUTER_ADDRESS:
     process.env.SWAP_ROUTER_ADDRESS ||
-    "0xf13D190e9117920c703d79B5F33732e10049b115", // PoolSwapTest on Sepolia
+    "0xf13D190e9117920c703d79B5F33732e10049b115", // UniswapV4Router04 on Sepolia
 
   // Token addresses (from Config.sol)
   TOKEN0_ADDRESS:
@@ -57,7 +76,7 @@ const ERC20_ABI = [
 ];
 
 const SWAP_ROUTER_ABI = [
-  "function swap(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, tuple(bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96) params, tuple(bool takeClaims, bool settleUsingBurn) testSettings, bytes hookData) external returns (tuple(int128 amount0, int128 amount1) delta)",
+  "function swap(int256 amountSpecified, uint256 amountLimit, bool zeroForOne, tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, bytes hookData, address receiver, uint256 deadline) external payable returns (int256)",
 ];
 
 /**
@@ -519,7 +538,8 @@ async function performSwap(
   swapRouterAddress,
   poolKey,
   swapAmount,
-  zeroForOne
+  zeroForOne,
+  strategyId
 ) {
   console.log("\n=== Performing Swap Operation ===");
   console.log(`  Swap Router: ${swapRouterAddress}`);
@@ -586,11 +606,6 @@ async function performSwap(
   console.log(`    tickSpacing: ${poolKey.tickSpacing}`);
   console.log(`    hooks: ${poolKey.hooks}`);
 
-  const testSettings = {
-    takeClaims: false,
-    settleUsingBurn: false,
-  };
-
   const hookData = ethers.getBytes("0x");
 
   console.log("\n  Executing swap...");
@@ -601,11 +616,16 @@ async function performSwap(
   const swapRouterInterface = new ethers.Interface(SWAP_ROUTER_ABI);
 
   try {
+    const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+
     const calldata = swapRouterInterface.encodeFunctionData("swap", [
-      poolKey,
-      swapParams,
-      testSettings,
-      hookData,
+      -swapAmount, // amountSpecified
+      0, // amountLimit (0 for no slippage protection in this test)
+      swapParams.zeroForOne, // zeroForOne
+      poolKey, // poolKey
+      strategyId, // hookData (pass current strategyId)
+      wallet.address, // receiver
+      deadline, // deadline
     ]);
 
     console.log("    Calling swap function via provider.call()...");
@@ -707,11 +727,16 @@ async function performSwap(
 
   console.log("\n  Step 2: Sending actual swap transaction...");
   try {
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+
     const tx = await swapRouter.swap(
-      poolKey,
-      swapParams,
-      testSettings,
-      hookData,
+      -swapAmount, // amountSpecified
+      0, // amountLimit
+      swapParams.zeroForOne, // zeroForOne
+      poolKey, // poolKey
+      strategyId, // hookData (pass current strategyId)
+      wallet.address, // receiver
+      deadline, // deadline
       {
         gasLimit: 5000000,
       }
@@ -732,11 +757,15 @@ async function performSwap(
 
         // Try to get revert reason by calling the function with callStatic
         try {
+          const deadline = Math.floor(Date.now() / 1000) + 3600;
           await swapRouter.swap.staticCall(
+            -swapAmount,
+            0,
+            swapParams.zeroForOne,
             poolKey,
-            swapParams,
-            testSettings,
-            hookData
+            strategyId,
+            wallet.address,
+            deadline
           );
         } catch (staticError) {
           console.error(`    Revert reason: ${staticError.message}`);
@@ -1071,7 +1100,8 @@ async function main() {
       CONFIG.SWAP_ROUTER_ADDRESS,
       poolKey,
       swapAmount,
-      zeroForOne
+      zeroForOne,
+      strategyId
     );
 
     console.log("\n=== All operations completed successfully! ===");
