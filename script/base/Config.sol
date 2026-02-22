@@ -16,7 +16,7 @@ contract Config {
     IERC20 constant token1 =
         IERC20(address(0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06));
 
-    /// @dev Hook contract address - set to deployed ConfidentialRebalancingHook on Sepolia
+    /// @dev Hook contract address - set to deployed Umbra Finance Hook on Sepolia
     /// Deployed at: 0x797283907437277Ff05FF929c871f7517BdecaC0 (with FHE timing fix)
     IHooks constant hookContract =
         IHooks(address(0x797283907437277Ff05FF929c871f7517BdecaC0));

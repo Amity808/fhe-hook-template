@@ -1,5 +1,5 @@
 /**
- * Frontend integration script for ConfidentialRebalancingHook
+ * Frontend integration script for Umbra Finance Hook
  */
 
 const { cofhejs, FheTypes, Encryptable } = require("cofhejs/node");
@@ -36,7 +36,7 @@ const CONFIG = {
 
   // Contract addresses from deployment (Sepolia chain ID: 11155111)
   HOOK_ADDRESS:
-    process.env.HOOK_ADDRESS || "0x797283907437277Ff05FF929c871f7517BdecaC0", // ConfidentialRebalancingHook with FHE timing fix
+    process.env.HOOK_ADDRESS || "0x797283907437277Ff05FF929c871f7517BdecaC0", // Umbra Finance Hook with FHE timing fix
   POOL_MANAGER_ADDRESS:
     process.env.POOL_MANAGER_ADDRESS ||
     "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543", // Uniswap V4 PoolManager
