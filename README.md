@@ -88,10 +88,17 @@ ebool needsRebalancing = FHE.gt(absDeviation, minThreshold);
 - Foundry
 - Fhenix Local Node / Testnet environment
 
+### Links & Repositories
+
+- **Live Demo Website:** [https://pprhook.vercel.app](https://pprhook.vercel.app)
+- **Interactive Dark Pool App:** [https://pprhook.vercel.app/demo](https://pprhook.vercel.app/demo)
+- **Smart Contracts (This Repo):** [https://github.com/Amity808/fhe-hook-template](https://github.com/Amity808/fhe-hook-template)
+- **Frontend Dashboard Repo:** [https://github.com/Amity808/pprhookpage](https://github.com/Amity808/pprhookpage)
+
 ### Installation
 
 ```bash
-# Clone the repository
+# Clone the contract repository
 git clone https://github.com/Amity808/fhe-hook-template.git
 cd fhe-hook-template
 
