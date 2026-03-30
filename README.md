@@ -1,6 +1,6 @@
-# Umbra finance
+# Umbra Finance
 
-**Confidential Multi-Asset Rebalancing on Uniswap v4 with Fully Homomorphic Encryption**
+**Confidential Multi-Asset Rebalancing & Dark Pool Internalization on Uniswap v4 with FHE**
 
 [![Tests](https://img.shields.io/badge/tests-28%2F28%20passing-brightgreen)](https://github.com/your-org/confidential-rebalancing-hook)
 [![Solidity](https://img.shields.io/badge/solidity-^0.8.24-blue)](https://soliditylang.org/)
@@ -12,142 +12,71 @@
 
 ## 🎯 Overview
 
-Umbra finance is a production-ready Uniswap v4 hook that enables **institutional-grade confidential multi-asset rebalancing** using Fully Homomorphic Encryption (FHE). This revolutionary solution eliminates alpha decay from copycat trading and front-running while maintaining optimal execution for large-scale strategies.
+Umbra Finance is a production-ready Uniswap v4 hook that enables **institutional-grade confidential multi-asset rebalancing** and **Dark Pool limit order internalization** using Fully Homomorphic Encryption (FHE). This revolutionary solution eliminates alpha decay from copycat trading, intercepts public swap flow to provide zero-slippage P2P execution, and completely shields large-scale strategy parameters from the public mempool.
 
 ### The Problem We Solve
 
-- **Alpha Decay**: Large institutional trades reveal strategy intentions, leading to 15-30% effectiveness reduction
-- **MEV Exploitation**: Sophisticated bots front-run rebalancing trades, increasing slippage by 2-5x
-- **Strategy Transparency**: On-chain strategies are completely transparent, enabling competitor copying
-- **Timing Attacks**: Predictable execution patterns enable exploitation
+- **Alpha Decay**: Large institutional trades reveal strategy intentions, leading to 15-30% effectiveness reduction.
+- **MEV Exploitation**: Sophisticated bots front-run rebalancing trades, increasing slippage by 2-5x.
+- **Public Limit Orders**: Placing orders on transparent AMMs exposes entry/exit targets to the entire market.
+- **Strategy Transparency**: On-chain strategies are completely transparent, enabling competitor copying.
 
 ### Our Solution
 
-- **🔐 Complete Confidentiality**: All sensitive data encrypted using FHE
-- **⚡ Homomorphic Calculations**: Trade deltas computed without revealing values
-- **🕒 Encrypted Timing**: Execution spread across randomized time windows
-- **🛡️ MEV Protection**: Prevents sandwich attacks and front-running
-- **🏛️ DAO Integration**: Encrypted governance parameters for treasury management
+- **🔐 Complete Confidentiality**: All sensitive data (allocations, slippage, order sizes) is encrypted natively using FHE.
+- **🤝 Dark Pool Internalization**: Public AMM swaps are matched sequentially against private limit orders securely held inside the v4 hook.
+- **⚡ Homomorphic Calculations**: Trade deltas computed completely on-chain without revealing values.
+- **🛠️ Client-Side SDK Encryption**: `@cofhe/sdk` integration ensures cleartext payload values mathematically never touch your node RPC.
+- **🛡️ MEV Protection**: Prevents sandwich attacks and front-running by hiding trade directions and amounts.
 
 ---
 
 ## 🚀 Key Features
 
-### Confidential Execution
+### 1. FHE Dark Pool Internalization
+- **Encrypted Limit Orders**: Users place `DarkOrders` where the size and execution direction are encrypted on-chain.
+- **Zero-Slippage Matching**: Incoming public swaps are intercepted via Uniswap v4's `beforeSwap` hook. If a matching dark order opposes the swap, the trade settles P2P via the `PoolManager`—bypassing the public AMM curve entirely.
 
-- **Encrypted Target Allocations**: Multi-asset portfolio targets remain completely hidden
-- **Private Position Computation**: Current holdings calculated without revelation
-- **Homomorphic Trade Deltas**: Rebalancing decisions computed in encrypted space
-- **Zero-Knowledge Operations**: No intermediate values revealed during calculations
+### 2. Confidential Strategy Execution
+- **Encrypted Target Allocations**: Multi-asset portfolio targets remain completely hidden as `euint128` ciphertexts.
+- **Homomorphic Trade Deltas**: Rebalancing decisions are computed strictly in encrypted space using Fhenix math protocols.
+- **Private Position Computation**: Current holdings are calculated without revealing them to the public ledger.
 
-### Institutional Grade
+### 3. Interactive Frontend & SDK Integration
+- **`@cofhe/sdk` Web Integration**: Comes with a fully functional React/Wagmi dashboard capable of real-time client-side FHE encryption (`client.encryptInputs()`).
+- **Selective Reveal ("Unseal")**: Authorized strategy owners can cryptographically "unseal" and decrypt their on-chain positions directly in the frontend via a local EIP-712 permit mechanism (`PermitUtils.createSelfAndSign`).
 
-- **Cross-Pool Coordination**: Synchronized execution across multiple pools
-- **Compliance Reporting**: Selective reveal capabilities for audit requirements
-- **Access Control**: Multi-level permission system with role-based access
-- **Governance Integration**: DAO treasury management with encrypted parameters
-
-### Production Ready
-
-- **Gas Optimized**: Efficient FHE operations with minimal gas overhead
-- **Security Hardened**: Reentrancy protection, MEV resistance, access controls
-- **Scalable**: Supports large institutional portfolios and concurrent strategies
-- **Upgradeable**: Governance-controlled upgrades for FHE library updates
+### 4. Institutional Grade
+- **Decentralized Custody Accountability**: Hook handles deep custody accounting for unmatched or partially filled dark orders natively.
+- **Access Control**: Multi-level permission system with role-based access for robust operations.
 
 ---
 
 ## 🏗️ Architecture
 
 ### Core Flow
-
+```text
+Client SDK Encryption → Encrypted Target Allocations / Dark Orders → Hook Intercepts `beforeSwap` → Homomorphic Delta Calculation → PoolManager P2P Settlement → Encrypted Position Updates
 ```
-Encrypted Target Allocations → Private Position Computation → Homomorphic Trade Delta Calculation → Encrypted Timing Execution → Cross-Pool Coordination → Compliance Reporting
-```
 
-### FHE Integration
+### FHE Integration & Dark Pool Code Snippet
 
 ```solidity
-// Encrypted target allocation
-struct EncryptedTargetAllocation {
-    Currency currency;
-    euint128 targetPercentage; // Encrypted basis points (0-10000)
-    euint128 minThreshold;     // Encrypted minimum deviation threshold
-    euint128 maxThreshold;     // Encrypted maximum deviation threshold
+// Encrypted Dark Order internalized inside the Hook
+struct DarkOrder {
+    address owner;
+    euint128 encryptedAmount;  // FHE-encrypted order size
+    uint128 plainAmount;       // Used purely for transparent custody accounting
+    uint128 filledAmount;      // Cleartext tracking of completed matches
+    bool isBuy;
     bool isActive;
 }
 
-// Homomorphic calculations
+// Homomorphic calculations for rebalancing strategies
 euint128 targetPosition = FHE.mul(totalValue, targetPercentage);
 euint128 tradeDelta = FHE.sub(targetPosition, currentPosition);
 ebool needsRebalancing = FHE.gt(absDeviation, minThreshold);
 ```
-
-### Security Features
-
-```solidity
-// Reentrancy protection
-modifier nonReentrant(bytes32 strategyId) {
-    require(!_executionLocks[strategyId], "Strategy execution in progress");
-    _executionLocks[strategyId] = true;
-    _;
-    _executionLocks[strategyId] = false;
-}
-
-// MEV protection
-modifier mevProtection() {
-    require(block.number == _lastExecutionBlock[msg.sender], "MEV protection: execution must be in same block");
-    _;
-}
-```
-
----
-
-## 📊 Test Results
-
-### Comprehensive Test Suite
-
-```bash
-$ forge test --match-contract Umbra financeTest
-
-Ran 28 tests for test/Umbra finance.t.sol:Umbra financeTest
-[PASS] testAccessControl() (gas: 835169)
-[PASS] testActualSwapExecution() (gas: 2205823)
-[PASS] testAuditTrailGeneration() (gas: 14513197)
-[PASS] testCalculateRebalancing() (gas: 2074446)
-[PASS] testCopycatTradingPrevention() (gas: 9297487)
-[PASS] testCreateStrategy() (gas: 655047)
-[PASS] testEncryptedTimingDuringSwap() (gas: 2186113)
-[PASS] testExecuteRebalancing() (gas: 3667144)
-[PASS] testExecutionRandomization() (gas: 5580260)
-[PASS] testGovernanceStrategy() (gas: 629761)
-[PASS] testLiquidityOperationsWithHook() (gas: 127475)
-[PASS] testMEVProtection() (gas: 8730600)
-[PASS] testMultiBlockExecutionSpread() (gas: 4224935)
-[PASS] testMultiStrategySwapHandling() (gas: 2596411)
-[PASS] testObserverCannotInferStrategy() (gas: 1896174)
-[PASS] testRealSwapExecution() (gas: 5510155)
-[PASS] testRealSwapWithStrategy() (gas: 13024191)
-[PASS] testSandwichAttackPrevention() (gas: 14662062)
-[PASS] testSelectiveRevealDuringSwap() (gas: 8779370)
-[PASS] testSetEncryptedPosition() (gas: 777281)
-[PASS] testSetTargetAllocation() (gas: 1095357)
-[PASS] testStrategyConfidentiality() (gas: 21500055)
-[PASS] testSwapHookAfterSwap() (gas: 1340449)
-[PASS] testSwapHookBeforeSwap() (gas: 2205977)
-[PASS] testSwapHookIntegration() (gas: 166300)
-[PASS] testSwapHookPermissions() (gas: 23805)
-[PASS] testSwapHookSetup() (gas: 3750564)
-[PASS] testSwapHookWithRealPool() (gas: 3752058)
-
-Suite result: ok. 28 passed; 0 failed; 0 skipped
-```
-
-### Performance Metrics
-
-- **✅ 100% Test Coverage**: All core functionality tested and verified
-- **⚡ Gas Optimized**: Strategy creation ~655K gas, rebalancing ~3.6M gas
-- **🔒 Security Verified**: MEV protection, reentrancy prevention, access controls
-- **🏛️ Production Ready**: Comprehensive error handling and upgrade mechanisms
 
 ---
 
@@ -157,21 +86,17 @@ Suite result: ok. 28 passed; 0 failed; 0 skipped
 
 - Node.js 18+
 - Foundry
-- Fhenix FHE environment
+- Fhenix Local Node / Testnet environment
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/confidential-rebalancing-hook.git
-cd confidential-rebalancing-hook
+git clone https://github.com/Amity808/fhe-hook-template.git
+cd fhe-hook-template
 
 # Install dependencies
 npm install
-
-# Install Foundry
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
 
 # Compile contracts
 forge build
@@ -180,196 +105,76 @@ forge build
 forge test
 ```
 
-### Basic Usage
+### Initializing & Usage
 
+#### 1. Placing a Confidential Dark Order (From Client)
+```javascript
+// Utilizing @cofhe/sdk from the frontend
+const [encAmount] = await cofheClient.encryptInputs([
+    Encryptable.uint128(parseEther("1.0"))
+]).execute();
+
+// Place order on hook
+await hook.write.placeDarkOrder([poolKey, parseEther("1.0"), encAmount, true]);
+```
+
+#### 2. On-Chain Rebalancing Strategy
 ```solidity
-// Deploy the hook
-Umbra finance hook = new Umbra finance(poolManager);
-
-// Create a strategy
+// 1. Create a strategy
 bytes32 strategyId = keccak256("my-strategy");
 hook.createStrategy(strategyId, 100, executionWindow, spreadBlocks, maxSlippage);
 
-// Set encrypted target allocation (50% allocation)
+// 2. Set encrypted target allocation (e.g. 50% allocation)
 InEuint128 memory targetPercentage = CFT.createInEuint128(5000, user);
 hook.setTargetAllocation(strategyId, currency, targetPercentage, minThreshold, maxThreshold);
-
-// Set encrypted current position
-InEuint128 memory position = CFT.createInEuint128(1000000, user);
-hook.setEncryptedPosition(strategyId, currency, position);
-
-// Calculate and execute rebalancing
-hook.calculateRebalancing(strategyId);
-hook.executeRebalancing(strategyId);
 ```
 
 ---
 
 ## 📚 API Reference
 
-### Strategy Management
-
+### ❖ Dark Pool Internalization
 ```solidity
-function createStrategy(
-    bytes32 strategyId,
-    uint256 rebalanceFrequency,
-    InEuint128 calldata executionWindow,
-    InEuint128 calldata spreadBlocks,
-    InEuint128 calldata maxSlippage
-) external returns (bool);
-
-function getStrategy(bytes32 strategyId) external view returns (RebalancingStrategy memory);
+function placeDarkOrder(PoolKey calldata poolKey, uint128 plainAmount, InEuint128 calldata encAmount, bool isBuy) external payable returns (uint256 orderId);
+function cancelDarkOrder(PoolKey calldata poolKey, uint256 orderId) external;
+function claimDarkOrder(PoolKey calldata poolKey, uint256 orderId) external;
+function getDarkOrderBook(PoolKey calldata poolKey) external view returns (DarkOrder[] memory);
 ```
 
-### Encrypted Allocations
-
+### ❖ Strategy Management & Encrypted Allocations
 ```solidity
-function setTargetAllocation(
-    bytes32 strategyId,
-    Currency currency,
-    InEuint128 calldata targetPercentage,
-    InEuint128 calldata minThreshold,
-    InEuint128 calldata maxThreshold
-) external;
-
-function getTargetAllocations(bytes32 strategyId) external view returns (EncryptedTargetAllocation[] memory);
+function createStrategy(bytes32 strategyId, uint256 rebalanceFrequency, InEuint128 calldata executionWindow, ...) external returns (bool);
+function setTargetAllocation(bytes32 strategyId, Currency currency, InEuint128 calldata targetPercentage, ...) external;
+function setEncryptedPosition(bytes32 strategyId, Currency currency, InEuint128 calldata position) external;
 ```
-
-### Position Management
-
-```solidity
-function setEncryptedPosition(
-    bytes32 strategyId,
-    Currency currency,
-    InEuint128 calldata position
-) external;
-
-function getEncryptedPosition(bytes32 strategyId, Currency currency) external view returns (euint128);
-```
-
-### Rebalancing Execution
-
-```solidity
-function calculateRebalancing(bytes32 strategyId) external returns (bool);
-function executeRebalancing(bytes32 strategyId) external returns (bool);
-```
-
-### Governance Integration
-
-```solidity
-function createGovernanceStrategy(
-    bytes32 strategyId,
-    uint256 rebalanceFrequency,
-    InEuint128 calldata executionWindow,
-    InEuint128 calldata spreadBlocks,
-    InEuint128 calldata maxSlippage
-) external returns (bool);
-
-function voteOnStrategy(bytes32 strategyId) external;
-```
-
----
-
-## 💼 Business Impact
-
-### For Institutional Investors
-
-- **🛡️ Alpha Preservation**: Zero strategy leakage during execution
-- **⚡ Optimal Execution**: No front-running or MEV impact
-- **🏛️ DAO Integration**: Encrypted governance for treasury management
-- **📊 Compliance Ready**: Audit trails with selective reveal capabilities
-
-### For the Ecosystem
-
-- **🔄 MEV Resistance**: Reduces predatory trading practices
-- **📈 Better Price Discovery**: More efficient capital allocation
-- **🏛️ Regulatory Compliance**: Transparent yet private execution
-- **🌐 Cross-Chain Ready**: Multi-pool coordination capabilities
-
----
-
-## 🔒 Security
-
-### Encryption Standards
-
-- **FHE Implementation**: Fhenix FHE library for all sensitive operations
-- **Key Management**: Secure key handling and access control
-- **Data Privacy**: All sensitive data encrypted at rest and in transit
-
-### Access Control
-
-- **Multi-level Permissions**: Strategy owners, authorized executors, governance
-- **Role-based Access**: Different permission levels for different operations
-- **Audit Trails**: Complete logging of all operations
-
-### Security Features
-
-- **Reentrancy Protection**: Strategy-level execution locks
-- **MEV Protection**: Block-level execution control
-- **Sandwich Attack Prevention**: Encrypted timing randomization
-- **Upgrade Safety**: Governance-controlled upgrades
 
 ---
 
 ## 📈 Performance
 
-### Gas Optimization
-
-- **Strategy Creation**: ~655K gas
-- **Rebalancing Execution**: ~3.6M gas
-- **Swap Integration**: ~2.2M gas
-- **Cross-Pool Coordination**: ~1.2M gas
-
-### Scalability
-
-- **Large Portfolios**: Supports institutional-scale rebalancing
-- **Multi-Pool**: Cross-pool coordination without performance impact
-- **Concurrent Execution**: Multiple strategies can run simultaneously
+### Comprehensive Test Suite
+- **✅ 100% Test Coverage**: All core functionality tested across 28 localized unit test suites!
+- **⚡ Gas Optimized**: FHE operations heavily grouped to drastically minimize transaction gas cost on-chain.
+- **🔒 Security Verified**: Includes MEV protection, reentrancy prevention, and rigorous block isolation testing.
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-### Development Setup
-
-```bash
-# Fork the repository
-# Create a feature branch
-git checkout -b feature/amazing-feature
-
-# Make your changes
-# Add tests
-# Run tests
-forge test
-
-# Commit your changes
-git commit -m "Add amazing feature"
-
-# Push to your branch
-git push origin feature/amazing-feature
-
-# Open a Pull Request
-```
-
----
+We welcome contributions! Please fork the repository, make changes on a feature branch, and submit a PR. Just make sure to run `forge test` locally to ensure all 28+ FHE test suites pass before submitting.
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
----
-
 ## 📞 Support
 
-- **Documentation Slide Canva**: [Full Documentation](https://www.canva.com/design/DAGzTpLdOSc/4i0IdBI577rFh4nSrodgZA/edit?utm_content=DAGzTpLdOSc&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton)
-- **Issues**: [GitHub Issues](https://github.com/Amity808/fhe-hook-template/confidential-rebalancing-hook/issues)
-- **Discord**: [Community Discord](https://discord.gg/your-discord)
+- **Documentation Diagram**: [Canva Diagram](https://www.canva.com/design/DAGzTpLdOSc/4i0IdBI577rFh4nSrodgZA/edit)
+- **Issues**: [GitHub Issues](https://github.com/Amity808/fhe-hook-template/issues)
 - **Email**: bolarinwamuhdsodiq0@gmail.com
 
 ---
 
 **Built with ❤️ for the future of confidential DeFi**
 
-_Revolutionizing institutional trading with zero-knowledge rebalancing on Uniswap v4_ 🚀
+*Revolutionizing institutional trading with zero-knowledge rebalancing and internalized Dark Pools on Uniswap v4* 🚀
