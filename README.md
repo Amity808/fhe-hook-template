@@ -1,6 +1,6 @@
 # Umbra Finance
 
-**Confidential Multi-Asset Rebalancing & Dark Pool Internalization on Uniswap v4 with FHE**
+**Private By Design: A Confidential Dark Pool & Rebalancing Hook on Uniswap v4**
 
 [![Tests](https://img.shields.io/badge/tests-28%2F28%20passing-brightgreen)](https://github.com/your-org/confidential-rebalancing-hook)
 [![Solidity](https://img.shields.io/badge/solidity-^0.8.24-blue)](https://soliditylang.org/)
@@ -10,24 +10,29 @@
 
 ---
 
-## 🎯 Overview
+## 💡 What is Umbra Finance? (The Idea)
 
-Umbra Finance is a production-ready Uniswap v4 hook that enables **institutional-grade confidential multi-asset rebalancing** and **Dark Pool limit order internalization** using Fully Homomorphic Encryption (FHE). This revolutionary solution eliminates alpha decay from copycat trading, intercepts public swap flow to provide zero-slippage P2P execution, and completely shields large-scale strategy parameters from the public mempool.
+**Umbra Finance is a fully decentralized "Dark Pool" and portfolio rebalancing protocol built directly on top of Uniswap v4.** 
 
-### The Problem We Solve
+In traditional finance, a "dark pool" is a private exchange where institutional investors can trade large blocks of assets without revealing their intentions to the public market until after the trade executes. This prevents other traders from front-running them or manipulating the price before they can finish buying/selling.
 
-- **Alpha Decay**: Large institutional trades reveal strategy intentions, leading to 15-30% effectiveness reduction.
-- **MEV Exploitation**: Sophisticated bots front-run rebalancing trades, increasing slippage by 2-5x.
-- **Public Limit Orders**: Placing orders on transparent AMMs exposes entry/exit targets to the entire market.
-- **Strategy Transparency**: On-chain strategies are completely transparent, enabling competitor copying.
+**The Problem:** In DeFi, *every single action*—from placing limit orders to setting Automated Market Maker (AMM) parameters—is entirely public on the blockchain. When a user or a DAO wants to rebalance a large portfolio (e.g., selling millions of Token A for Token B), sophisticated MEV bots and copycat traders can see the transaction in the mempool and exploit it (sandwich attacks, front-running), causing massive slippage and loss of funds.
 
-### Our Solution
+**The Solution:** Umbra Finance solves this by bringing True Privacy to the Execution Layer. Using **Fully Homomorphic Encryption (FHE)** via the Fhenix network, Umbra Finance acts as a Uniswap v4 Hook that allows users to place **completely encrypted Dark Orders** and automated **Confidential Rebalancing Strategies**. 
 
-- **🔐 Complete Confidentiality**: All sensitive data (allocations, slippage, order sizes) is encrypted natively using FHE.
-- **🤝 Dark Pool Internalization**: Public AMM swaps are matched sequentially against private limit orders securely held inside the v4 hook.
-- **⚡ Homomorphic Calculations**: Trade deltas computed completely on-chain without revealing values.
-- **🛠️ Client-Side SDK Encryption**: `@cofhe/sdk` integration ensures cleartext payload values mathematically never touch your node RPC.
-- **🛡️ MEV Protection**: Prevents sandwich attacks and front-running by hiding trade directions and amounts.
+Because of FHE, the smart contract can mathematically calculate and match trades directly on the blockchain *without ever decrypting the amounts, the target prices, or the user's trading strategy!*
+
+---
+
+## 🎯 How It Works 
+
+Our project intercepts public Uniswap v4 swaps and matches them against our encrypted private Dark Orders. 
+
+1. **Client-Side Encryption:** A user connects to our dApp and encrypts their trading strategy (e.g. "I want to sell 100 ETH") locally in their browser using the `@cofhe/sdk`. The cleartext data *never* touches a public RPC node.
+2. **The Encrypted Dark Order:** The encrypted data (`euint128` ciphertexts) is stored seamlessly inside the Uniswap v4 Hook. No one looking at the blockchain can see how big the order is or when it executes.
+3. **Zero-Slippage Matching:** When someone does a normal swap on Uniswap v4, our Hook's `beforeSwap` function triggers. It performs homomorphic math (computing encrypted data) to see if the public swap matches any of our private Dark Orders. 
+4. **P2P Settlement:** If they match, the trade settles natively inside the `PoolManager` peer-to-peer. The dark order gets filled with zero slippage, and the public swapper gets their tokens, completely bypassing the public AMM slippage curve.
+5. **Selective Reveal ("Unseal"):** Strategy owners can sign an EIP-712 permit to temporarily decrypt and view their own positions on the frontend visually verifying what they hold without leaking the strategy to the public.
 
 ---
 
@@ -46,8 +51,9 @@ Umbra Finance is a production-ready Uniswap v4 hook that enables **institutional
 - **`@cofhe/sdk` Web Integration**: Comes with a fully functional React/Wagmi dashboard capable of real-time client-side FHE encryption (`client.encryptInputs()`).
 - **Selective Reveal ("Unseal")**: Authorized strategy owners can cryptographically "unseal" and decrypt their on-chain positions directly in the frontend via a local EIP-712 permit mechanism (`PermitUtils.createSelfAndSign`).
 
-### 4. Institutional Grade
+### 4. Institutional Grade Security
 - **Decentralized Custody Accountability**: Hook handles deep custody accounting for unmatched or partially filled dark orders natively.
+- **MEV Protection**: Prevents sandwich attacks and front-running by hiding trade directions and amounts.
 - **Access Control**: Multi-level permission system with role-based access for robust operations.
 
 ---
@@ -94,6 +100,7 @@ ebool needsRebalancing = FHE.gt(absDeviation, minThreshold);
 - **Interactive Dark Pool App:** [https://pprhook.vercel.app/demo](https://pprhook.vercel.app/demo)
 - **Smart Contracts (This Repo):** [https://github.com/Amity808/fhe-hook-template](https://github.com/Amity808/fhe-hook-template)
 - **Frontend Dashboard Repo:** [https://github.com/Amity808/pprhookpage](https://github.com/Amity808/pprhookpage)
+- **Documentation Diagram**: [Canva Concept Diagram](https://www.canva.com/design/DAGzTpLdOSc/4i0IdBI577rFh4nSrodgZA/edit)
 
 ### Installation
 
@@ -105,14 +112,12 @@ cd fhe-hook-template
 # Install dependencies
 npm install
 
-# Compile contracts
+# Compile contracts & Run Tests
 forge build
-
-# Run tests
 forge test
 ```
 
-### Initializing & Usage
+### Initializing & Usage Examples
 
 #### 1. Placing a Confidential Dark Order (From Client)
 ```javascript
@@ -142,16 +147,46 @@ hook.setTargetAllocation(strategyId, currency, targetPercentage, minThreshold, m
 
 ### ❖ Dark Pool Internalization
 ```solidity
+/**
+ * @notice Place a confidential order in the dark order book for a pool.
+ * @param poolKey The Uniswap v4 pool to place the order on.
+ * @param plainAmount Cleartext token amount to custody.
+ * @param encAmount FHE-encrypted representation of the order size.
+ * @param isBuy Direction of the order.
+ */
 function placeDarkOrder(PoolKey calldata poolKey, uint128 plainAmount, InEuint128 calldata encAmount, bool isBuy) external payable returns (uint256 orderId);
+
+/**
+ * @notice Cancel an unfilled dark order and reclaim custody.
+ */
 function cancelDarkOrder(PoolKey calldata poolKey, uint256 orderId) external;
+
+/**
+ * @notice Claim the output tokens from a matched dark order.
+ */
 function claimDarkOrder(PoolKey calldata poolKey, uint256 orderId) external;
-function getDarkOrderBook(PoolKey calldata poolKey) external view returns (DarkOrder[] memory);
+
+/**
+ * @notice Read the active state of an order (cleartext matching status, encrypted total size).
+ */
+function getDarkOrder(PoolKey calldata poolKey, uint256 orderId) external view returns (DarkOrder memory);
 ```
 
 ### ❖ Strategy Management & Encrypted Allocations
 ```solidity
+/**
+ * @notice Create a completely private rebalancing strategy.
+ */
 function createStrategy(bytes32 strategyId, uint256 rebalanceFrequency, InEuint128 calldata executionWindow, ...) external returns (bool);
+
+/**
+ * @notice Set an encrypted target portfolio allocation for a specific asset using an `euint128` ciphertext.
+ */
 function setTargetAllocation(bytes32 strategyId, Currency currency, InEuint128 calldata targetPercentage, ...) external;
+
+/**
+ * @notice Set the current encrypted balance (Position) of a token inside a strategy.
+ */
 function setEncryptedPosition(bytes32 strategyId, Currency currency, InEuint128 calldata position) external;
 ```
 
@@ -170,7 +205,7 @@ function setEncryptedPosition(bytes32 strategyId, Currency currency, InEuint128 
 
 We welcome contributions! Please fork the repository, make changes on a feature branch, and submit a PR. Just make sure to run `forge test` locally to ensure all 28+ FHE test suites pass before submitting.
 
-## 📄 License
+## 📄 License & Contact
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
