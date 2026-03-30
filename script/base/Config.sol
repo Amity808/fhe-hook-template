@@ -16,10 +16,10 @@ contract Config {
     IERC20 constant token1 =
         IERC20(address(0xEa20820719c5Ae04Bce9A098E209f4d8C60DAF06));
 
-    /// @dev Hook contract address - set to deployed Umbra Finance Hook on Sepolia
-    /// Deployed at: 0x797283907437277Ff05FF929c871f7517BdecaC0 (with FHE timing fix)
+    /// @dev Hook contract address - Dark Pool Hook (with FHE + BEFORE_SWAP_RETURNS_DELTA)
+    /// Deployed at: 0x6A755997D7B06900Fc3AFA8085A76C7182658aC8
     IHooks constant hookContract =
-        IHooks(address(0x797283907437277Ff05FF929c871f7517BdecaC0));
+        IHooks(address(0x6A755997D7B06900Fc3AFA8085A76C7182658aC8));
 
     Currency constant currency0 = Currency.wrap(address(token0));
     Currency constant currency1 = Currency.wrap(address(token1));

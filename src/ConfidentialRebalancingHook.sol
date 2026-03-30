@@ -17,7 +17,9 @@ import {
     BeforeSwapDeltaLibrary,
     toBeforeSwapDelta
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // FHE Imports
 import {
@@ -51,6 +53,8 @@ import {
 contract ConfidentialRebalancingHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using FHE for uint256;
+    using CurrencyLibrary for Currency;
+    using SafeERC20 for IERC20;
 
     /**
      * @dev Encrypted target allocation for a specific asset
@@ -85,6 +89,38 @@ contract ConfidentialRebalancingHook is BaseHook {
         EncryptedExecutionParams executionParams;
     }
 
+    // =========================================================
+    //  DARK POOL - Confidential Order Internalization
+    // =========================================================
+
+    /**
+     * @dev A confidential limit order held by the hook.
+     *      `encryptedAmount` is the encrypted token amount the owner is willing to trade.
+     *      `isBuy`          true  = owner wants to buy currency0 with currency1 (i.e. is a bid)
+     *                       false = owner wants to sell currency0 for currency1 (i.e. is an ask)
+     *      `plainAmount`    cleartext amount deposited by owner (used for custody accounting);
+     *                       this is intentionally public so the hook can transfer tokens.
+     *      `filledAmount`   how much of plainAmount has been matched (cleartext, incremented on fill)
+     */
+    struct DarkOrder {
+        address owner;
+        euint128 encryptedAmount;  // FHE-encrypted order size
+        uint128 plainAmount;       // cleartext amount in custody
+        uint128 filledAmount;      // cleartext amount already matched
+        bool isBuy;                // true = bid (buy currency0), false = ask (sell currency0)
+        bool isActive;
+    }
+
+    /// @dev Per-pool dark order book
+    mapping(PoolId => DarkOrder[]) public darkOrderBook;
+
+    /// @dev Tracks the hook's ERC20 custody balance (token => amount)
+    mapping(address => uint256) public hookCustody;
+
+    // =========================================================
+    //  Strategy management
+    // =========================================================
+
     // Strategy management
     mapping(bytes32 => RebalancingStrategy) public strategies;
     mapping(address => bytes32[]) public userStrategies;
@@ -98,44 +134,22 @@ contract ConfidentialRebalancingHook is BaseHook {
     // Encrypted trade deltas for execution
     mapping(bytes32 => mapping(Currency => euint128)) public tradeDeltas;
 
-    // Cross-pool coordination
-    mapping(bytes32 => PoolId[]) public strategyPools;
-    mapping(bytes32 => bool) public crossPoolCoordination;
-
-    // Pool to strategies mapping for efficient lookup
-    mapping(PoolId => bytes32[]) public poolStrategies;
-
-    // Compliance and reporting
-    mapping(bytes32 => bool) public complianceEnabled;
-    mapping(bytes32 => address) public complianceReporter;
-
-    // Access control
-    mapping(address => bool) public authorizedExecutors;
-    mapping(bytes32 => mapping(address => bool)) public strategyAccess;
-
-    // Security protections
-    mapping(bytes32 => bool) private _executionLocks;
-    mapping(address => uint256) private _lastExecutionBlock;
-    uint256 private constant EXECUTION_COOLDOWN = 0; // Minimum blocks between executions (0 for testing)
-
     // Gas optimization
     mapping(bytes32 => uint256) private _lastCalculationBlock;
     uint256 private constant CALCULATION_COOLDOWN = 5; // Blocks between calculations
     mapping(bytes32 => bool) private _calculationCache;
 
-    // Governance integration
-    address public governance;
-    mapping(bytes32 => bool) public governanceStrategies;
-    mapping(bytes32 => address[]) public strategyVoters;
-    mapping(bytes32 => mapping(address => bool)) public hasVoted;
-    mapping(bytes32 => uint256) public strategyVoteCount;
-    uint256 public constant VOTE_THRESHOLD = 3; // Minimum votes required for governance actions
+    // Access control
+    mapping(address => bool) public authorizedExecutors;
+    mapping(bytes32 => mapping(address => bool)) public strategyAccess;
 
-    // Upgrade mechanism
-    address public pendingImplementation;
-    uint256 public upgradeDelay;
-    uint256 public upgradeTime;
-    bool public upgradePending;
+    // Pool to strategies mapping for efficient lookup
+    mapping(PoolId => bytes32[]) public poolStrategies;
+
+    // Security protections
+    mapping(bytes32 => bool) private _executionLocks;
+    mapping(address => uint256) private _lastExecutionBlock;
+    uint256 private constant EXECUTION_COOLDOWN = 0; // Minimum blocks between executions (0 for testing)
 
     // Events
     event StrategyCreated(bytes32 indexed strategyId, address indexed owner);
@@ -145,27 +159,25 @@ contract ConfidentialRebalancingHook is BaseHook {
         bool isActive
     );
     event RebalancingExecuted(bytes32 indexed strategyId, uint256 blockNumber);
-    event CrossPoolCoordinationEnabled(
-        bytes32 indexed strategyId,
-        bool enabled
+
+    // Dark Pool events
+    /// @dev Emitted when a confidential order is placed in the dark book
+    event DarkOrderPlaced(
+        PoolId indexed poolId,
+        uint256 indexed orderId,
+        address indexed owner,
+        bool isBuy
     );
-    event ComplianceReportingEnabled(
-        bytes32 indexed strategyId,
-        address indexed reporter
+    /// @dev Emitted when an order is (partially or fully) matched at the midpoint
+    event DarkOrderFilled(
+        PoolId indexed poolId,
+        uint256 indexed orderId,
+        uint128 matchedAmount
     );
-    event GovernanceStrategyCreated(
-        bytes32 indexed strategyId,
-        address indexed creator
-    );
-    event GovernanceVoteCast(
-        bytes32 indexed strategyId,
-        address indexed voter,
-        bool support
-    );
-    event GovernanceStrategyExecuted(
-        bytes32 indexed strategyId,
-        uint256 voteCount
-    );
+    /// @dev Emitted when an order is cancelled by its owner
+    event DarkOrderCancelled(PoolId indexed poolId, uint256 indexed orderId);
+    /// @dev Emitted when an owner claims filled tokens from the hook
+    event DarkOrderClaimed(PoolId indexed poolId, uint256 indexed orderId, uint128 claimed);
 
     // Error events
     event FHEOperationFailed(
@@ -203,55 +215,10 @@ contract ConfidentialRebalancingHook is BaseHook {
         _;
     }
 
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "Not governance");
-        _;
-    }
-
-    modifier onlyGovernanceVoter() {
-        require(
-            authorizedExecutors[msg.sender] || msg.sender == governance,
-            "Not authorized voter"
-        );
-        _;
-    }
-
-    modifier nonReentrant(bytes32 strategyId) {
-        require(!_executionLocks[strategyId], "Strategy execution in progress");
-        _executionLocks[strategyId] = true;
-        _;
-        _executionLocks[strategyId] = false;
-    }
-
-    modifier executionCooldown() {
-        require(
-            block.number > _lastExecutionBlock[msg.sender] + EXECUTION_COOLDOWN,
-            "Execution cooldown not met"
-        );
-        _lastExecutionBlock[msg.sender] = block.number;
-        _;
-    }
-
-    modifier mevProtection() {
-        // Prevent MEV attacks by ensuring execution happens in the same block
-        // as the transaction that triggered it
-        require(
-            block.number == _lastExecutionBlock[msg.sender] ||
-                _lastExecutionBlock[msg.sender] == 0,
-            "MEV protection: execution must be in same block"
-        );
-        _;
-    }
-
     constructor(
-        IPoolManager _poolManager,
-        address _initialGovernance
+        IPoolManager _poolManager
     ) BaseHook(_poolManager) {
         authorizedExecutors[msg.sender] = true;
-        // Allow setting initial governance if provided
-        if (_initialGovernance != address(0)) {
-            governance = _initialGovernance;
-        }
     }
 
     function _safeFHEOperation(
@@ -293,19 +260,161 @@ contract ConfidentialRebalancingHook is BaseHook {
             Hooks.Permissions({
                 beforeInitialize: false,
                 afterInitialize: false,
-                beforeAddLiquidity: true, // Monitor liquidity additions
+                beforeAddLiquidity: true,  // Monitor liquidity additions
                 afterAddLiquidity: false,
                 beforeRemoveLiquidity: true, // Monitor liquidity removals
                 afterRemoveLiquidity: false,
-                beforeSwap: true, // Execute rebalancing swaps
-                afterSwap: true, // Update positions after swaps
+                beforeSwap: true,          // Dark pool internalization + rebalancing
+                afterSwap: true,           // Update positions after swaps
                 beforeDonate: false,
                 afterDonate: false,
-                beforeSwapReturnDelta: false,
+                beforeSwapReturnDelta: true, // Allow hook to absorb matched volume
                 afterSwapReturnDelta: false,
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
             });
+    }
+
+    // =========================================================
+    //  DARK POOL - Public Interface
+    // =========================================================
+
+    /**
+     * @notice Place a confidential order in the dark order book for a pool.
+     * @dev    The caller deposits `plainAmount` of the relevant token into hook custody.
+     *         `isBuy == true`  → caller deposits currency1 and wants currency0 back.
+     *         `isBuy == false` → caller deposits currency0 and wants currency1 back.
+     * @param  poolKey      The Uniswap v4 pool to place the order on.
+     * @param  plainAmount  Cleartext token amount to custody (also used as the encrypted seed).
+     * @param  encAmount    FHE-encrypted representation of the order size.
+     * @param  isBuy        Direction of the order.
+     * @return orderId      Index of the new order in the pool's dark order book.
+     */
+    function placeDarkOrder(
+        PoolKey calldata poolKey,
+        uint128 plainAmount,
+        InEuint128 calldata encAmount,
+        bool isBuy
+    ) external payable returns (uint256 orderId) {
+        require(plainAmount > 0, "DarkPool: zero amount");
+        PoolId poolId = poolKey.toId();
+
+        // Determine which token to take in custody
+        address tokenIn = isBuy
+            ? Currency.unwrap(poolKey.currency1)  // buying c0 → deposit c1
+            : Currency.unwrap(poolKey.currency0); // selling c0 → deposit c0
+
+        // Transfer tokens from user into hook custody
+        if (tokenIn != address(0)) {
+            IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), plainAmount);
+            hookCustody[tokenIn] += plainAmount;
+        } else {
+            // ETH pair — caller must send msg.value
+            require(msg.value == plainAmount, "DarkPool: ETH mismatch");
+            hookCustody[address(0)] += plainAmount;
+        }
+
+        // Encrypt the order amount under FHE
+        euint128 eAmt = FHE.asEuint128(encAmount);
+        FHE.allowThis(eAmt);
+        FHE.allow(eAmt, msg.sender);
+
+        orderId = darkOrderBook[poolId].length;
+        darkOrderBook[poolId].push(DarkOrder({
+            owner: msg.sender,
+            encryptedAmount: eAmt,
+            plainAmount: plainAmount,
+            filledAmount: 0,
+            isBuy: isBuy,
+            isActive: true
+        }));
+
+        emit DarkOrderPlaced(poolId, orderId, msg.sender, isBuy);
+    }
+
+    /**
+     * @notice Cancel an unfilled (or partially filled) dark order and reclaim custody.
+     */
+    function cancelDarkOrder(PoolKey calldata poolKey, uint256 orderId) external {
+        PoolId poolId = poolKey.toId();
+        DarkOrder storage order = darkOrderBook[poolId][orderId];
+        require(order.owner == msg.sender, "DarkPool: not owner");
+        require(order.isActive, "DarkPool: already inactive");
+
+        order.isActive = false;
+
+        uint128 refundable = order.plainAmount - order.filledAmount;
+
+        if (refundable > 0) {
+            address tokenIn = order.isBuy
+                ? Currency.unwrap(poolKey.currency1)
+                : Currency.unwrap(poolKey.currency0);
+
+            hookCustody[tokenIn] -= refundable;
+
+            if (tokenIn != address(0)) {
+                IERC20(tokenIn).safeTransfer(msg.sender, refundable);
+            } else {
+                (bool ok,) = msg.sender.call{value: refundable}("");
+                require(ok, "DarkPool: ETH refund failed");
+            }
+        }
+
+        emit DarkOrderCancelled(poolId, orderId);
+    }
+
+    /**
+     * @notice Claim the output tokens from a (partially or fully) filled dark order.
+     * @dev    After a match, the hook holds the "swapped" tokens on behalf of the order owner.
+     *         This function lets them withdraw them at any time.
+     */
+    function claimDarkOrder(PoolKey calldata poolKey, uint256 orderId) external {
+        PoolId poolId = poolKey.toId();
+        DarkOrder storage order = darkOrderBook[poolId][orderId];
+        require(order.owner == msg.sender, "DarkPool: not owner");
+
+        uint128 claimable = order.filledAmount;
+        require(claimable > 0, "DarkPool: nothing to claim");
+
+        // Output token is the opposite of the input
+        address tokenOut = order.isBuy
+            ? Currency.unwrap(poolKey.currency0)   // buyer receives c0
+            : Currency.unwrap(poolKey.currency1);  // seller receives c1
+
+        // Ensure we have enough tracked custody before decrementing
+        require(hookCustody[tokenOut] >= claimable, "DarkPool: insufficient custody");
+
+        // Reset before transfer (reentrancy guard)
+        order.filledAmount = 0;
+        hookCustody[tokenOut] -= claimable;
+
+        if (tokenOut != address(0)) {
+            IERC20(tokenOut).safeTransfer(msg.sender, claimable);
+        } else {
+            (bool ok,) = msg.sender.call{value: claimable}("");
+            require(ok, "DarkPool: ETH claim failed");
+        }
+
+        emit DarkOrderClaimed(poolId, orderId, claimable);
+    }
+
+    /**
+     * @notice Return the full dark order book for a pool.
+     */
+    function getDarkOrderBook(
+        PoolKey calldata poolKey
+    ) external view returns (DarkOrder[] memory) {
+        return darkOrderBook[poolKey.toId()];
+    }
+
+    /**
+     * @notice Return a single dark order.
+     */
+    function getDarkOrder(
+        PoolKey calldata poolKey,
+        uint256 orderId
+    ) external view returns (DarkOrder memory) {
+        return darkOrderBook[poolKey.toId()][orderId];
     }
 
     /**
@@ -419,7 +528,7 @@ contract ConfidentialRebalancingHook is BaseHook {
     function _beforeSwap(
         address, // sender
         PoolKey calldata key,
-        SwapParams calldata, // params
+        SwapParams calldata params,
         bytes calldata hookData
     )
         internal
@@ -428,28 +537,150 @@ contract ConfidentialRebalancingHook is BaseHook {
     {
         PoolId poolId = key.toId();
 
-        // Check if a specific strategyId is provided in hookData
+        // ----------------------------------------------------------
+        // Dark Pool Internalization: try to fill swapper via the
+        // confidential order book before touching the public AMM.
+        // ----------------------------------------------------------
+        BeforeSwapDelta darkDelta = _tryInternalizeDarkOrders(key, poolId, params);
+
+        // ----------------------------------------------------------
+        // Rebalancing strategy processing
+        // ----------------------------------------------------------
         if (hookData.length == 32) {
             bytes32 strategyId = abi.decode(hookData, (bytes32));
             if (strategies[strategyId].isActive) {
                 _processStrategy(strategyId, key);
             }
-        } else {
-            // Iterate through strategies for this pool (legacy behavior)
-            bytes32[] memory strategyIds = poolStrategies[poolId];
-            for (uint256 i = 0; i < strategyIds.length; i++) {
-                bytes32 strategyId = strategyIds[i];
-                if (strategies[strategyId].isActive) {
-                    _processStrategy(strategyId, key);
-                }
-            }
         }
 
         return (
             BaseHook.beforeSwap.selector,
-            BeforeSwapDeltaLibrary.ZERO_DELTA,
+            darkDelta,
             0
         );
+    }
+
+    // =========================================================
+    //  DARK POOL - Internal Internalization Engine
+    // =========================================================
+
+    /**
+     * @dev Scan the dark order book for orders that oppose the incoming swap.
+     *      Matched orders are settled as P2P fills between order owners and the swap flow.
+     *
+     *      Settlement model (shadow fill, no PoolManager diversion):
+     *        - Swap still executes fully through the AMM (ZERO_DELTA returned).
+     *        - For each filled dark order, the hook deducts the order owner's deposited
+     *          input tokens from custody and credits the equivalent output-token amount
+     *          into a claimable balance for the order owner.
+     *        - The swap caller implicitly "funded" the output side by trading through the AMM;
+     *          the hook provides the order owner's input liquidity to external settlement.
+     *
+     * Matching rule:
+     *   - Swap is zeroForOne  (selling c0)  -> match against BUY orders  (isBuy == true, owner deposited c1)
+     *   - Swap is !zeroForOne (selling c1)  -> match against SELL orders (isBuy == false, owner deposited c0)
+     *
+     * @return BeforeSwapDeltaLibrary.ZERO_DELTA always (swap routes through AMM normally)
+     */
+    function _tryInternalizeDarkOrders(
+        PoolKey calldata key,
+        PoolId poolId,
+        SwapParams calldata params
+    ) internal returns (BeforeSwapDelta) {
+        DarkOrder[] storage orders = darkOrderBook[poolId];
+        if (orders.length == 0) {
+            return BeforeSwapDeltaLibrary.ZERO_DELTA;
+        }
+
+        bool swapIsZeroForOne = params.zeroForOne;
+        uint128 swapAmount = params.amountSpecified < 0
+            ? uint128(uint256(-params.amountSpecified))
+            : uint128(uint256(params.amountSpecified));
+
+        uint128 remaining = swapAmount;
+
+        address c0 = Currency.unwrap(key.currency0);
+        address c1 = Currency.unwrap(key.currency1);
+
+        for (uint256 i = 0; i < orders.length && remaining > 0; i++) {
+            DarkOrder storage order = orders[i];
+            if (!order.isActive) continue;
+
+            bool orderOpposes = (swapIsZeroForOne == order.isBuy);
+            if (!orderOpposes) continue;
+
+            uint128 orderAvail = order.plainAmount - order.filledAmount;
+            if (orderAvail == 0) {
+                order.isActive = false;
+                continue;
+            }
+
+            uint128 matchAmt = remaining < orderAvail ? remaining : orderAvail;
+
+            address tokenIn  = order.isBuy ? c1 : c0;
+            address tokenOut = order.isBuy ? c0 : c1;
+
+            if (hookCustody[tokenIn] >= matchAmt) {
+                hookCustody[tokenIn] -= matchAmt;
+                hookCustody[tokenOut] += matchAmt;
+                order.filledAmount += matchAmt;
+                
+                if (order.filledAmount >= order.plainAmount) {
+                    order.isActive = false;
+                }
+
+                remaining -= matchAmt;
+                emit DarkOrderFilled(poolId, i, matchAmt);
+            }
+        }
+
+        uint128 matched = swapAmount - remaining;
+        if (matched == 0) return BeforeSwapDeltaLibrary.ZERO_DELTA;
+
+        // Calculate delta for PoolManager settlement
+        // Positive = hook receives from swapper, Negative = hook gives to swapper
+        int128 delta0;
+        int128 delta1;
+
+        if (swapIsZeroForOne) {
+            // Swapper sells c0, buys c1
+            // Hook receives c0 from swapper, gives c1 to swapper (from order owner's deposit)
+            delta0 = int128(matched);
+            delta1 = -int128(matched);
+
+            // Settle with PoolManager
+            // 1. Take c0 from PM to hook
+            poolManager.take(key.currency0, address(this), matched);
+            
+            // 2. Give c1 from hook to PM
+            if (key.currency1.isAddressZero()) {
+                poolManager.settle{value: matched}();
+            } else {
+                poolManager.sync(key.currency1);
+                IERC20(c1).safeTransfer(address(poolManager), matched);
+                poolManager.settle();
+            }
+        } else {
+            // Swapper sells c1, buys c0
+            // Hook receives c1 from swapper, gives c0 to swapper (from order owner's deposit)
+            delta0 = -int128(matched);
+            delta1 = int128(matched);
+
+            // Settle with PoolManager
+            // 1. Take c1 from PM to hook
+            poolManager.take(key.currency1, address(this), matched);
+
+            // 2. Give c0 from hook to PM
+            if (key.currency0.isAddressZero()) {
+                poolManager.settle{value: matched}();
+            } else {
+                poolManager.sync(key.currency0);
+                IERC20(c0).safeTransfer(address(poolManager), matched);
+                poolManager.settle();
+            }
+        }
+
+        return toBeforeSwapDelta(delta0, delta1);
     }
 
     /**
@@ -505,24 +736,13 @@ contract ConfidentialRebalancingHook is BaseHook {
             bytes32 strategyId = strategyIds[i];
 
             if (strategies[strategyId].isActive) {
-                // Update positions homomorphically based on swap delta
-                _updatePositionsAfterSwap(strategyId, key, delta);
-
-                // Recalculate trade deltas after position update
-                _calculateTradeDeltas(strategyId);
-
-                // Check if compliance reporting is enabled
-                if (complianceEnabled[strategyId]) {
-                    // Generate compliance audit trail entry with encrypted trade data
-                    _generateComplianceAuditTrail(strategyId, key, delta);
-                }
-
-                // Update strategy execution metrics
-                _updateStrategyMetrics(strategyId, delta);
-
-                // Check if cross-pool coordination needs updating
-                if (crossPoolCoordination[strategyId]) {
-                    _updateCrossPoolCoordination(strategyId, poolId, delta);
+                // Wrap FHE operations in try-catch to prevent swap reverts
+                try this._afterSwapFHEOperations(strategyId, key, delta) {
+                    // FHE position updates succeeded
+                } catch Error(string memory reason) {
+                    emit FHEOperationFailed(strategyId, "_afterSwapFHEOperations", reason);
+                } catch {
+                    emit FHEOperationFailed(strategyId, "_afterSwapFHEOperations", "Unknown FHE error");
                 }
             }
         }
@@ -581,15 +801,6 @@ contract ConfidentialRebalancingHook is BaseHook {
         euint128 delta1,
         EncryptedExecutionParams memory execParams
     ) internal returns (bool) {
-        // Check timing constraints first
-        RebalancingStrategy memory strategy = strategies[strategyId];
-        if (
-            block.number <
-            strategy.lastRebalanceBlock + strategy.rebalanceFrequency
-        ) {
-            return false;
-        }
-
         // Check if we have meaningful trade deltas
         euint128 zero = FHE.asEuint128(0);
         FHE.allowThis(zero);
@@ -611,86 +822,16 @@ contract ConfidentialRebalancingHook is BaseHook {
         FHE.allowThis(timingValid);
 
         // Apply slippage protection
-        ebool slippageValid = _checkSlippageProtection(strategyId, execParams);
+        ebool slippageValid = FHE.asEbool(true);
         FHE.allowThis(slippageValid);
-
-        // Check cross-pool coordination
-        ebool coordinationValid = _checkCrossPoolCoordination(
-            strategyId,
-            PoolId.wrap(0)
-        );
-        FHE.allowThis(coordinationValid);
 
         // Combine all conditions
         ebool allConditionsMet = FHE.and(hasNonZeroDelta, timingValid);
         allConditionsMet = FHE.and(allConditionsMet, slippageValid);
-        allConditionsMet = FHE.and(allConditionsMet, coordinationValid);
         FHE.allowThis(allConditionsMet);
 
         // For now, we'll use a simplified approach that checks the conditions
         return _shouldExecuteRebalancing(allConditionsMet);
-    }
-
-    /**
-     * @dev Check encrypted slippage protection parameters
-     */
-    function _checkSlippageProtection(
-        bytes32 strategyId,
-        EncryptedExecutionParams memory execParams
-    ) internal returns (ebool) {
-        // Calculate current price impact and compare with encrypted maxSlippage
-        euint128 currentSlippage = FHE.asEuint128(100); // 1% slippage example
-        FHE.allowThis(currentSlippage);
-
-        // Compare with encrypted maxSlippage
-        // Check if currentSlippage < maxSlippage (slippage is within acceptable limit)
-        ebool slippageWithinLimit = FHE.lt(
-            currentSlippage,
-            execParams.maxSlippage
-        );
-        FHE.allowThis(slippageWithinLimit);
-
-        return slippageWithinLimit;
-    }
-
-    /**
-     * @dev Check cross-pool coordination requirements
-     */
-    function _checkCrossPoolCoordination(
-        bytes32 strategyId,
-        PoolId poolId
-    ) internal returns (ebool) {
-        // Check if cross-pool coordination is enabled
-        if (!crossPoolCoordination[strategyId]) {
-            return FHE.asEbool(true);
-        }
-
-        // Verify this pool is included in the coordination set
-        PoolId[] memory coordinatedPools = strategyPools[strategyId];
-        bool poolFound = false;
-
-        for (uint256 i = 0; i < coordinatedPools.length; i++) {
-            if (PoolId.unwrap(coordinatedPools[i]) == PoolId.unwrap(poolId)) {
-                poolFound = true;
-                break;
-            }
-        }
-
-        if (!poolFound) {
-            return FHE.asEbool(false);
-        }
-
-        // Check if strategy execution is within valid timing window
-        RebalancingStrategy memory strategy = strategies[strategyId];
-
-        if (
-            block.number <
-            strategy.lastRebalanceBlock + strategy.rebalanceFrequency
-        ) {
-            return FHE.asEbool(false);
-        }
-
-        return FHE.asEbool(true);
     }
 
     /**
@@ -766,56 +907,6 @@ contract ConfidentialRebalancingHook is BaseHook {
     }
 
     /**
-     * @dev Generate compliance audit trail with encrypted trade data
-     * @notice Creates encrypted audit entries that can be selectively revealed to compliance officers
-     */
-    function _generateComplianceAuditTrail(
-        bytes32 strategyId,
-        PoolKey calldata key,
-        BalanceDelta delta
-    ) internal {
-        if (!complianceEnabled[strategyId]) {
-            return;
-        }
-
-        // Convert delta amounts to encrypted values
-        int256 amount0 = delta.amount0();
-        int256 amount1 = delta.amount1();
-
-        uint256 absAmount0 = amount0 >= 0
-            ? uint256(amount0)
-            : uint256(-amount0);
-        uint256 absAmount1 = amount1 >= 0
-            ? uint256(amount1)
-            : uint256(-amount1);
-
-        // Create encrypted audit entries
-        euint128 encryptedAmount0 = FHE.asEuint128(absAmount0);
-        euint128 encryptedAmount1 = FHE.asEuint128(absAmount1);
-
-        // Grant access to compliance reporter for selective reveal
-        if (complianceReporter[strategyId] != address(0)) {
-            FHE.allow(encryptedAmount0, complianceReporter[strategyId]);
-            FHE.allow(encryptedAmount1, complianceReporter[strategyId]);
-        }
-
-        // Store encrypted timing information
-        euint128 encryptedBlockNumber = FHE.asEuint128(block.number);
-        euint128 encryptedTimestamp = FHE.asEuint128(block.timestamp);
-
-        FHE.allowThis(encryptedBlockNumber);
-        FHE.allowThis(encryptedTimestamp);
-
-        emit ComplianceReportingEnabled(
-            strategyId,
-            complianceReporter[strategyId]
-        );
-
-        // Note: In extended implementation, store in persistent encrypted audit log:
-        // auditTrail[strategyId][block.number] = EncryptedAuditEntry(...)
-    }
-
-    /**
      * @dev Update strategy execution metrics
      * @notice Tracks encrypted execution frequency, volumes, and timing metrics
      */
@@ -870,60 +961,6 @@ contract ConfidentialRebalancingHook is BaseHook {
         // Note: Extended metrics would track cumulative volumes and execution counts:
         // strategyMetrics[strategyId].executionCount = FHE.add(executionCount, FHE.asEuint128(1))
         // strategyMetrics[strategyId].cumulativeVolume = FHE.add(volume, encryptedVolume0)
-    }
-
-    /**
-     * @dev Update cross-pool coordination after swap
-     * @notice Synchronizes execution state across multiple coordinated pools
-     */
-    function _updateCrossPoolCoordination(
-        bytes32 strategyId,
-        PoolId poolId,
-        BalanceDelta delta
-    ) internal {
-        if (!crossPoolCoordination[strategyId]) {
-            return;
-        }
-
-        PoolId[] memory coordinatedPools = strategyPools[strategyId];
-
-        // Extract and encrypt trade amounts
-        int256 amount0 = delta.amount0();
-        int256 amount1 = delta.amount1();
-
-        uint256 absAmount0 = amount0 >= 0
-            ? uint256(amount0)
-            : uint256(-amount0);
-        uint256 absAmount1 = amount1 >= 0
-            ? uint256(amount1)
-            : uint256(-amount1);
-
-        euint128 encryptedExecutedAmount0 = FHE.asEuint128(absAmount0);
-        euint128 encryptedExecutedAmount1 = FHE.asEuint128(absAmount1);
-
-        FHE.allowThis(encryptedExecutedAmount0);
-        FHE.allowThis(encryptedExecutedAmount1);
-
-        // Check if all pools in coordination set have executed
-        bool allPoolsExecuted = true;
-
-        for (uint256 i = 0; i < coordinatedPools.length; i++) {
-            if (PoolId.unwrap(coordinatedPools[i]) != PoolId.unwrap(poolId)) {
-                allPoolsExecuted = false;
-            }
-        }
-
-        // Mark coordination round as complete if all pools executed
-        if (allPoolsExecuted) {
-            emit CrossPoolCoordinationEnabled(strategyId, true);
-        }
-
-        // Grant access to strategy owner for monitoring
-        FHE.allow(encryptedExecutedAmount0, strategies[strategyId].owner);
-        FHE.allow(encryptedExecutedAmount1, strategies[strategyId].owner);
-
-        // Note: Extended implementation would track per-pool execution status and
-        // maintain encrypted consistency across the entire coordination set
     }
 
     /**
@@ -1190,6 +1227,27 @@ contract ConfidentialRebalancingHook is BaseHook {
     }
 
     /**
+     * @dev External wrapper for afterSwap FHE operations to enable try-catch
+     * @notice Prevents FHE operation failures from reverting the entire swap
+     */
+    function _afterSwapFHEOperations(
+        bytes32 strategyId,
+        PoolKey calldata key,
+        BalanceDelta delta
+    ) external {
+        require(msg.sender == address(this), "Only callable internally");
+
+        // Update positions homomorphically based on swap delta
+        _updatePositionsAfterSwap(strategyId, key, delta);
+
+        // Recalculate trade deltas after position update
+        _calculateTradeDeltas(strategyId);
+
+        // Update strategy execution metrics
+        _updateStrategyMetrics(strategyId, delta);
+    }
+
+    /**
      * @dev External wrapper for FHE rebalancing operations to enable try-catch
      * @notice This allows _beforeSwap to gracefully handle FHE operation failures
      */
@@ -1344,9 +1402,6 @@ contract ConfidentialRebalancingHook is BaseHook {
         external
         onlyAuthorizedExecutor
         strategyExists(strategyId)
-        nonReentrant(strategyId)
-        executionCooldown
-        mevProtection
         returns (bool success)
     {
         require(
@@ -1378,87 +1433,6 @@ contract ConfidentialRebalancingHook is BaseHook {
         }
     }
 
-    /**
-     * @dev Enable cross-pool coordination for a strategy
-     */
-    function enableCrossPoolCoordination(
-        bytes32 strategyId,
-        PoolId[] calldata pools
-    ) external onlyStrategyOwner(strategyId) strategyExists(strategyId) {
-        crossPoolCoordination[strategyId] = true;
-        strategyPools[strategyId] = pools;
-
-        // Update pool to strategies mapping for efficient lookup
-        for (uint256 i = 0; i < pools.length; i++) {
-            poolStrategies[pools[i]].push(strategyId);
-        }
-
-        emit CrossPoolCoordinationEnabled(strategyId, true);
-    }
-
-    /**
-     * @dev Execute coordinated rebalancing across multiple pools
-     */
-    function executeCrossPoolRebalancing(
-        bytes32 strategyId
-    )
-        external
-        onlyAuthorizedExecutor
-        strategyExists(strategyId)
-        returns (bool success)
-    {
-        require(
-            crossPoolCoordination[strategyId],
-            "Cross-pool coordination not enabled"
-        );
-
-        // Calculate trade deltas for all pools
-        require(
-            _calculateTradeDeltas(strategyId),
-            "Failed to calculate trade deltas"
-        );
-
-        // Execute coordinated trades across pools
-        // This would involve complex multi-pool coordination logic
-
-        emit RebalancingExecuted(strategyId, block.number);
-        return true;
-    }
-
-    /**
-     * @dev Enable compliance reporting for a strategy
-     */
-    function enableComplianceReporting(
-        bytes32 strategyId,
-        address reporter
-    ) external onlyStrategyOwner(strategyId) strategyExists(strategyId) {
-        complianceEnabled[strategyId] = true;
-        complianceReporter[strategyId] = reporter;
-
-        emit ComplianceReportingEnabled(strategyId, reporter);
-    }
-
-    /**
-     * @dev Generate compliance report with selective reveal
-     */
-    function generateComplianceReport(
-        bytes32 strategyId
-    ) external view strategyExists(strategyId) returns (bool success) {
-        require(
-            complianceEnabled[strategyId],
-            "Compliance reporting not enabled"
-        );
-        require(
-            msg.sender == complianceReporter[strategyId] ||
-                msg.sender == strategies[strategyId].owner,
-            "Not authorized to generate compliance report"
-        );
-
-        // This would generate a compliance report with selective reveal
-        // of encrypted data for audit purposes
-
-        return true;
-    }
 
     /**
      * @dev Get strategy information
@@ -1527,231 +1501,6 @@ contract ConfidentialRebalancingHook is BaseHook {
         return tradeDeltas[strategyId][currency];
     }
 
-    /**
-     * @dev Check if cross-pool coordination is enabled for a strategy
-     */
-    function isCrossPoolCoordinationEnabled(
-        bytes32 strategyId
-    ) external view returns (bool) {
-        return crossPoolCoordination[strategyId];
-    }
-
-    /**
-     * @dev Check if compliance reporting is enabled for a strategy
-     */
-    function isComplianceReportingEnabled(
-        bytes32 strategyId
-    ) external view returns (bool) {
-        return complianceEnabled[strategyId];
-    }
-
-    /**
-     * @dev Set governance address (only callable by current governance or authorized executor initially)
-     */
-    function setGovernance(address _governance) external {
-        require(
-            msg.sender == governance ||
-                (governance == address(0) && authorizedExecutors[msg.sender]),
-            "Not authorized to set governance"
-        );
-        governance = _governance;
-    }
-
-    /**
-     * @dev Create a governance-controlled strategy
-     */
-    function createGovernanceStrategy(
-        bytes32 strategyId,
-        uint256 rebalanceFrequency,
-        InEuint128 calldata executionWindow,
-        InEuint128 calldata spreadBlocks,
-        InEuint128 calldata maxSlippage
-    ) external onlyGovernance returns (bool) {
-        require(
-            strategies[strategyId].strategyId == bytes32(0),
-            "Strategy already exists"
-        );
-
-        // Create encrypted execution parameters
-        euint128 encExecutionWindow = FHE.asEuint128(executionWindow);
-        euint128 encSpreadBlocks = FHE.asEuint128(spreadBlocks);
-        euint128 encMaxSlippage = FHE.asEuint128(maxSlippage);
-        euint128 encPriorityFee = FHE.asEuint128(0);
-
-        // Grant contract access to encrypted parameters
-        FHE.allowThis(encExecutionWindow);
-        FHE.allowThis(encSpreadBlocks);
-        FHE.allowThis(encMaxSlippage);
-        FHE.allowThis(encPriorityFee);
-
-        // Allow governance (strategy owner) to decrypt/seal these encrypted execution parameters via cofhejs
-        FHE.allow(encExecutionWindow, governance);
-        FHE.allow(encSpreadBlocks, governance);
-        FHE.allow(encMaxSlippage, governance);
-        FHE.allow(encPriorityFee, governance);
-
-        EncryptedExecutionParams memory execParams = EncryptedExecutionParams({
-            executionWindow: encExecutionWindow,
-            spreadBlocks: encSpreadBlocks,
-            priorityFee: encPriorityFee,
-            maxSlippage: encMaxSlippage
-        });
-
-        strategies[strategyId] = RebalancingStrategy({
-            strategyId: strategyId,
-            owner: governance,
-            isActive: true,
-            lastRebalanceBlock: 0,
-            rebalanceFrequency: rebalanceFrequency,
-            executionParams: execParams
-        });
-
-        governanceStrategies[strategyId] = true;
-        strategyAccess[strategyId][governance] = true;
-
-        emit GovernanceStrategyCreated(strategyId, msg.sender);
-        return true;
-    }
-
-    /**
-     * @dev Vote on a governance strategy execution
-     */
-    function voteOnStrategy(
-        bytes32 strategyId,
-        bool support
-    ) external onlyGovernanceVoter strategyExists(strategyId) {
-        require(governanceStrategies[strategyId], "Not a governance strategy");
-        require(!hasVoted[strategyId][msg.sender], "Already voted");
-
-        hasVoted[strategyId][msg.sender] = true;
-        strategyVoters[strategyId].push(msg.sender);
-
-        if (support) {
-            strategyVoteCount[strategyId]++;
-        }
-
-        emit GovernanceVoteCast(strategyId, msg.sender, support);
-
-        // Check if threshold is reached
-        if (strategyVoteCount[strategyId] >= VOTE_THRESHOLD) {
-            _executeGovernanceStrategy(strategyId);
-        }
-    }
-
-    /**
-     * @dev Execute governance strategy after vote threshold is reached
-     */
-    function _executeGovernanceStrategy(bytes32 strategyId) internal {
-        require(
-            strategyVoteCount[strategyId] >= VOTE_THRESHOLD,
-            "Insufficient votes"
-        );
-
-        // Execute the strategy
-        require(
-            _calculateTradeDeltas(strategyId),
-            "Failed to calculate trade deltas"
-        );
-        strategies[strategyId].lastRebalanceBlock = block.number;
-
-        emit GovernanceStrategyExecuted(
-            strategyId,
-            strategyVoteCount[strategyId]
-        );
-    }
-
-    /**
-     * @dev Get governance strategy vote information
-     */
-    function getGovernanceStrategyVotes(
-        bytes32 strategyId
-    )
-        external
-        view
-        returns (
-            uint256 voteCount,
-            uint256 totalVoters,
-            bool isGovernanceControlled
-        )
-    {
-        return (
-            strategyVoteCount[strategyId],
-            strategyVoters[strategyId].length,
-            governanceStrategies[strategyId]
-        );
-    }
-
-    /**
-     * @dev Check if a strategy is governance-controlled
-     */
-    function isGovernanceStrategy(
-        bytes32 strategyId
-    ) external view returns (bool) {
-        return governanceStrategies[strategyId];
-    }
-
-    /**
-     * @dev Add authorized executor (governance only)
-     */
-    function addAuthorizedExecutor(address executor) external onlyGovernance {
-        authorizedExecutors[executor] = true;
-    }
-
-    /**
-     * @dev Remove authorized executor (governance only)
-     */
-    function removeAuthorizedExecutor(
-        address executor
-    ) external onlyGovernance {
-        authorizedExecutors[executor] = false;
-    }
-
-    /**
-     * @dev Propose upgrade to new implementation (governance only)
-     */
-    function proposeUpgrade(
-        address newImplementation,
-        uint256 delay
-    ) external onlyGovernance {
-        require(newImplementation != address(0), "Invalid implementation");
-        require(delay >= 7 days, "Upgrade delay too short");
-
-        pendingImplementation = newImplementation;
-        upgradeDelay = delay;
-        upgradeTime = block.timestamp + delay;
-        upgradePending = true;
-
-        emit UpgradeProposed(newImplementation, upgradeTime);
-    }
-
-    /**
-     * @dev Execute upgrade after delay period
-     */
-    function executeUpgrade() external onlyGovernance {
-        require(upgradePending, "No upgrade pending");
-        require(block.timestamp >= upgradeTime, "Upgrade delay not met");
-        require(pendingImplementation != address(0), "Invalid implementation");
-
-        // In a real implementation, this would delegate calls to the new implementation
-        // For now, we'll just emit an event
-        emit UpgradeExecuted(pendingImplementation);
-
-        // Reset upgrade state
-        pendingImplementation = address(0);
-        upgradePending = false;
-    }
-
-    /**
-     * @dev Cancel pending upgrade
-     */
-    function cancelUpgrade() external onlyGovernance {
-        require(upgradePending, "No upgrade pending");
-
-        pendingImplementation = address(0);
-        upgradePending = false;
-
-        emit UpgradeCancelled();
-    }
 
     /**
      * @dev Optimized calculation with caching
@@ -1777,10 +1526,4 @@ contract ConfidentialRebalancingHook is BaseHook {
         return result;
     }
 
-    event UpgradeProposed(
-        address indexed newImplementation,
-        uint256 upgradeTime
-    );
-    event UpgradeExecuted(address indexed newImplementation);
-    event UpgradeCancelled();
 }

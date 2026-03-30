@@ -1,0 +1,186 @@
+Compiling 1 files with Solc 0.8.26
+Solc 0.8.26 finished in 14.72s
+Compiler run successful with warnings:
+Warning (2072): Unused local variable.
+   --> src/ConfidentialRebalancingHook.sol:741:9:
+    |
+741 |         uint128 matched = swapAmount - remaining;
+    |         ^^^^^^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+   --> src/ConfidentialRebalancingHook.sol:932:9:
+    |
+932 |         bytes32 strategyId,
+    |         ^^^^^^^^^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+    --> src/ConfidentialRebalancingHook.sol:1054:9:
+     |
+1054 |         ebool shouldExecute
+     |         ^^^^^^^^^^^^^^^^^^^
+
+Warning (5667): Unused function parameter. Remove or comment out the variable name to silence this warning.
+    --> src/ConfidentialRebalancingHook.sol:1068:9:
+     |
+1068 |         PoolKey calldata key,
+     |         ^^^^^^^^^^^^^^^^^^^^
+
+Warning (2018): Function state mutability can be restricted to pure
+    --> src/ConfidentialRebalancingHook.sol:1053:5:
+     |
+1053 |     function _shouldExecuteRebalancing(
+     |     ^ (Relevant source part starts here and spans across multiple lines).
+
+Traces:
+  [50796254] DeployDarkPool::run()
+    ├─ [0] VM::envUint("PRIVATE_KEY") [staticcall]
+    │   └─ ← [Return] <env var value>
+    ├─ [0] VM::addr(<pk>) [staticcall]
+    │   └─ ← [Return] 0x8822F2965090Ddc102F7de354dfd6E642C090269
+    ├─ [0] VM::envAddress("GOVERNANCE_ADDR") [staticcall]
+    │   └─ ← [Revert] vm.envAddress: environment variable "GOVERNANCE_ADDR" not found
+    ├─ [0] console::log("==============================================") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  Confidential Dark Pool Hook Deployment") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  Network:    Sepolia testnet") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("==============================================") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("Deployer   :", 0x8822F2965090Ddc102F7de354dfd6E642C090269) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("Governance :", 0x8822F2965090Ddc102F7de354dfd6E642C090269) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("PoolManager:", 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("ETH balance:", 87, "milli-ETH") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("Mined hook address:", ConfidentialRebalancingHook: [0x8854D46548cff10d1f72dB3800b15fE218094ac8]) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] VM::toString(0x0000000000000000000000000000000000000000000000000000000000002190) [staticcall]
+    │   └─ ← [Return] "0x0000000000000000000000000000000000000000000000000000000000002190"
+    ├─ [0] console::log("CREATE2 salt (hex):", "0x0000000000000000000000000000000000000000000000000000000000002190") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] VM::startBroadcast(<pk>)
+    │   └─ ← [Return]
+    ├─ [4843417] Create2Deployer::create2()
+    │   ├─ [4799415] → new ConfidentialRebalancingHook@0x8854D46548cff10d1f72dB3800b15fE218094ac8
+    │   │   └─ ← [Return] 23738 bytes of code
+    │   └─ ← [Return] 0x8854d46548cff10d1f72db3800b15fe218094ac8
+    ├─ [749] ConfidentialRebalancingHook::governance() [staticcall]
+    │   └─ ← [Return] 0x8822F2965090Ddc102F7de354dfd6E642C090269
+    ├─ [0] VM::stopBroadcast()
+    │   └─ ← [Return]
+    ├─ [0] console::log("==============================================") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  DEPLOYMENT SUCCESSFUL") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("==============================================") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("Hook address       :", ConfidentialRebalancingHook: [0x8854D46548cff10d1f72dB3800b15fE218094ac8]) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [749] ConfidentialRebalancingHook::governance() [staticcall]
+    │   └─ ← [Return] 0x8822F2965090Ddc102F7de354dfd6E642C090269
+    ├─ [0] console::log("Governance         :", 0x8822F2965090Ddc102F7de354dfd6E642C090269) [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("Next steps:") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  1. Create a pool with this hook:") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("     forge script script/01_CreatePoolAndMintLiquidity.s.sol \\") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("       --rpc-url $SEPOLIA_RPC_URL --broadcast -vvvv") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  2. Place a dark order:") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("     Use cast or a frontend to call hook.placeDarkOrder(...)") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  3. Execute a swap to trigger internalization:") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("     forge script script/03_Swap.s.sol \\") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("       --rpc-url $SEPOLIA_RPC_URL --broadcast -vvvv") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("  4. Claim filled proceeds:") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("     Use cast to call hook.claimDarkOrder(poolKey, orderId)") [staticcall]
+    │   └─ ← [Stop]
+    ├─ [0] console::log("==============================================") [staticcall]
+    │   └─ ← [Stop]
+    └─ ← [Return]
+
+
+Script ran successfully.
+
+== Logs ==
+  ==============================================
+    Confidential Dark Pool Hook Deployment
+    Network:    Sepolia testnet
+  ==============================================
+  Deployer   : 0x8822F2965090Ddc102F7de354dfd6E642C090269
+  Governance : 0x8822F2965090Ddc102F7de354dfd6E642C090269
+  PoolManager: 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543
+  ETH balance: 87 milli-ETH
+  Mined hook address: 0x8854D46548cff10d1f72dB3800b15fE218094ac8
+  CREATE2 salt (hex): 0x0000000000000000000000000000000000000000000000000000000000002190
+  ==============================================
+    DEPLOYMENT SUCCESSFUL
+  ==============================================
+  Hook address       : 0x8854D46548cff10d1f72dB3800b15fE218094ac8
+  Governance         : 0x8822F2965090Ddc102F7de354dfd6E642C090269
+  
+  Next steps:
+    1. Create a pool with this hook:
+       forge script script/01_CreatePoolAndMintLiquidity.s.sol \
+         --rpc-url $SEPOLIA_RPC_URL --broadcast -vvvv
+  
+    2. Place a dark order:
+       Use cast or a frontend to call hook.placeDarkOrder(...)
+  
+    3. Execute a swap to trigger internalization:
+       forge script script/03_Swap.s.sol \
+         --rpc-url $SEPOLIA_RPC_URL --broadcast -vvvv
+  
+    4. Claim filled proceeds:
+       Use cast to call hook.claimDarkOrder(poolKey, orderId)
+  ==============================================
+
+## Setting up 1 EVM.
+==========================
+Simulated On-chain Traces:
+
+  [4843417] Create2Deployer::create2()
+    ├─ [4799415] → new ConfidentialRebalancingHook@0x8854D46548cff10d1f72dB3800b15fE218094ac8
+    │   └─ ← [Return] 23738 bytes of code
+    └─ ← [Return] 0x8854d46548cff10d1f72db3800b15fe218094ac8
+
+
+==========================
+
+Chain 11155111
+
+Estimated gas price: 0.001000242 gwei
+
+Estimated total gas used for script: 7257160
+
+Estimated amount required: 0.00000725891623272 ETH
+
+==========================
+
+
+==========================
+
+ONCHAIN EXECUTION COMPLETE & SUCCESSFUL.
+
+Transactions saved to: /Users/amityclev/Documents/dev/uniswap/flinch/fhe-hook-template/broadcast/DeployDarkPool.s.sol/11155111/run-latest.json
+
+Sensitive values saved to: /Users/amityclev/Documents/dev/uniswap/flinch/fhe-hook-template/cache/DeployDarkPool.s.sol/11155111/run-latest.json
+

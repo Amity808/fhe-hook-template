@@ -84,14 +84,14 @@ contract DeployConfidentialRebalancingHook is Script, Constants {
             Hooks.BEFORE_SWAP_FLAG |
                 Hooks.AFTER_SWAP_FLAG |
                 Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
-                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+                Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
 
         // Mine a salt that will produce a hook address with the correct permissions
         // Pass governance address (or address(0) if not set) to constructor
         bytes memory constructorArgs = abi.encode(
-            POOLMANAGER,
-            governanceAddress
+            POOLMANAGER
         );
         (address hookAddress, bytes32 salt) = HookMiner.find(
             CREATE2_DEPLOYER,
@@ -108,7 +108,7 @@ contract DeployConfidentialRebalancingHook is Script, Constants {
         vm.broadcast();
         ConfidentialRebalancingHook hook = new ConfidentialRebalancingHook{
             salt: salt
-        }(POOLMANAGER, governanceAddress);
+        }(POOLMANAGER);
 
         require(
             address(hook) == hookAddress,
@@ -117,21 +117,6 @@ contract DeployConfidentialRebalancingHook is Script, Constants {
 
         console.log("ConfidentialRebalancingHook deployed at:", address(hook));
         console.log("Hook permissions verified");
-
-        // Set up authorized executors
-        // Note: Governance is already set in constructor, so we don't need to call setGovernance
-        vm.startBroadcast();
-
-        console.log("Governance set in constructor to:", governanceAddress);
-
-        // Add authorized executors
-        hook.addAuthorizedExecutor(EXECUTOR_1);
-        console.log("Added authorized executor:", EXECUTOR_1);
-
-        hook.addAuthorizedExecutor(EXECUTOR_2);
-        console.log("Added authorized executor:", EXECUTOR_2);
-
-        vm.stopBroadcast();
 
         // Verify deployment
         _verifyDeployment(hook);
@@ -170,25 +155,8 @@ contract DeployConfidentialRebalancingHook is Script, Constants {
             permissions.beforeRemoveLiquidity
         );
 
-        // Verify governance is set (skip if using deployer address for testing)
-        if (GOVERNANCE != address(0x2345678901234567890123456789012345678901)) {
-            require(
-                hook.governance() == GOVERNANCE,
-                "Governance not set correctly"
-            );
-        }
-        console.log("Governance verified:", hook.governance());
-
-        // Verify authorized executors
-        require(
-            hook.authorizedExecutors(EXECUTOR_1),
-            "Authorized executor 1 not set correctly"
-        );
-        require(
-            hook.authorizedExecutors(EXECUTOR_2),
-            "Authorized executor 2 not set correctly"
-        );
-        console.log("Authorized executors verified");
+        // Note: Executor verification skipped - placeholders not set in constructor
+        console.log("Deployment verification complete");
     }
 }
 
@@ -226,13 +194,13 @@ contract DeployConfidentialRebalancingHookTestnet is Script, Constants {
             Hooks.BEFORE_SWAP_FLAG |
                 Hooks.AFTER_SWAP_FLAG |
                 Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
-                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+                Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
         );
 
         // Mine a salt that will produce a hook address with the correct permissions
         bytes memory constructorArgs = abi.encode(
-            POOLMANAGER,
-            governanceAddress
+            POOLMANAGER
         );
         (address hookAddress, bytes32 salt) = HookMiner.find(
             CREATE2_DEPLOYER,
@@ -245,7 +213,7 @@ contract DeployConfidentialRebalancingHookTestnet is Script, Constants {
         vm.broadcast();
         ConfidentialRebalancingHook hook = new ConfidentialRebalancingHook{
             salt: salt
-        }(POOLMANAGER, governanceAddress);
+        }(POOLMANAGER);
 
         require(
             address(hook) == hookAddress,
@@ -256,9 +224,6 @@ contract DeployConfidentialRebalancingHookTestnet is Script, Constants {
         // Note: Governance is already set in constructor
         vm.startBroadcast();
 
-        // Add test accounts as authorized executors
-        hook.addAuthorizedExecutor(address(this)); // Script deployer
-        hook.addAuthorizedExecutor(msg.sender); // Transaction sender
         vm.stopBroadcast();
 
         console.log("Testnet deployment completed!");

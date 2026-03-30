@@ -48,7 +48,13 @@ contract CreatePoolAndAddLiquidityScript is Script, Constants, Config {
     int24 tickUpper = 600;
     /////////////////////////////////////
 
-    function run() external {
+    function run(uint24 _lpFee, int24 _tickSpacing) external {
+        lpFee = _lpFee;
+        tickSpacing = _tickSpacing;
+        run();
+    }
+
+    function run() public {
         // Get the deployer address (the address that will deploy the contract)
         address recipient = _resolveRecipient();
         // Check account balance before proceeding
@@ -123,9 +129,9 @@ contract CreatePoolAndAddLiquidityScript is Script, Constants, Config {
             token1Amount
         );
 
-        // slippage limits
-        uint256 amount0Max = token0Amount + 1 wei;
-        uint256 amount1Max = token1Amount + 1 wei;
+        // slippage limits - allowing for price drift in existing pools
+        uint256 amount0Max = type(uint128).max;
+        uint256 amount1Max = type(uint128).max;
 
         (
             bytes memory actions,
@@ -147,11 +153,14 @@ contract CreatePoolAndAddLiquidityScript is Script, Constants, Config {
         // Check if pool is already initialized using getSlot0 (library function reads storage)
         // This avoids Foundry simulation issues by checking before broadcasting
         PoolId poolId = pool.toId();
+        console.log("Pool ID:", uint256(PoolId.unwrap(poolId)));
+        
         bool poolAlreadyInitialized = false;
 
         // getSlot0 reads storage directly - if pool doesn't exist, it returns zeros
         // We check if sqrtPriceX96 is non-zero to determine if pool is initialized
         (uint160 sqrtPriceX96, , , ) = POOLMANAGER.getSlot0(poolId);
+        console.log("Current sqrtPriceX96:", sqrtPriceX96);
 
         if (sqrtPriceX96 != 0) {
             poolAlreadyInitialized = true;

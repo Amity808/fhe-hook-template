@@ -23,6 +23,7 @@ contract SimpleSwapRouter {
         address sender;
         PoolKey key;
         SwapParams params;
+        bytes hookData;
     }
 
     constructor(IPoolManager _poolManager) {
@@ -37,13 +38,15 @@ contract SimpleSwapRouter {
      */
     function swap(
         PoolKey memory key,
-        SwapParams memory params
+        SwapParams memory params,
+        bytes calldata hookData
     ) external payable returns (BalanceDelta delta) {
         // Encode callback data
         SwapCallbackData memory data = SwapCallbackData({
             sender: msg.sender,
             key: key,
-            params: params
+            params: params,
+            hookData: hookData
         });
 
         // Call unlock with our callback - encode the data as bytes
@@ -67,7 +70,7 @@ contract SimpleSwapRouter {
         SwapCallbackData memory data = abi.decode(rawData, (SwapCallbackData));
 
         // Execute the swap while unlocked
-        BalanceDelta delta = poolManager.swap(data.key, data.params, "");
+        BalanceDelta delta = poolManager.swap(data.key, data.params, data.hookData);
 
         // Handle settlement based on delta signs
         int128 delta0 = delta.amount0();
@@ -89,15 +92,6 @@ contract SimpleSwapRouter {
             _take(data.key.currency1, data.sender, uint128(delta1));
         }
 
-        // Sync both currencies to finalize settlement
-        // This is required even after take() to update PoolManager's internal accounting
-        if (delta0 != 0) {
-            poolManager.sync(data.key.currency0);
-        }
-        if (delta1 != 0) {
-            poolManager.sync(data.key.currency1);
-        }
-
         return abi.encode(delta);
     }
 
@@ -117,10 +111,12 @@ contract SimpleSwapRouter {
                 token.transferFrom(payer, address(this), amount),
                 "Transfer failed"
             );
+            // Sync to update pool manager's accounting before transfer
+            poolManager.sync(currency);
             // Transfer from router to pool manager
             token.transfer(address(poolManager), amount);
-            // Sync to update pool manager's accounting
-            poolManager.sync(currency);
+            // Complete settlement
+            poolManager.settle();
         }
     }
 

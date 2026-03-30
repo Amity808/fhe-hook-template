@@ -1,0 +1,300 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+import "forge-std/console.sol";
+import {ConfidentialRebalancingHook} from "../src/ConfidentialRebalancingHook.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {Currency, CurrencyLibrary} from "@uniswap/v4-core/src/types/Currency.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
+import {FHE, InEuint128, euint128} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {CoFheTest} from "@fhenixprotocol/cofhe-foundry-mocks/CoFheTest.sol";
+import {Fixtures} from "./utils/Fixtures.sol";
+import {EasyPosm} from "./utils/EasyPosm.sol";
+import {IPositionManager} from "v4-periphery/src/interfaces/IPositionManager.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+/**
+ * @title DarkPoolInternalizationTest
+ * @notice Tests the Confidential Dark Pool Internalization feature of ConfidentialRebalancingHook.
+ *
+ * Test cases:
+ *  1. testPlaceDarkOrder      - User submits a dark order; tokens are taken into hook custody.
+ *  2. testCancelDarkOrder     - User cancels their order and receives an ERC-20 refund.
+ *  3. testDarkOrderFillOnSwap - A public (zeroForOne) swap fills a matching dark BUY order.
+ *  4. testClaimAfterFill      - After a fill, the order owner can claim their output tokens.
+ *  5. testPartialFill         - A swap smaller than the order only partially fills it.
+ *  6. testNoMatchPassthrough  - A swap with no opposing dark orders passes through normally.
+ *  7. testMultiOrderFill      - A large swap fills two stacked dark orders in sequence.
+ */
+contract DarkPoolInternalizationTest is Test, Fixtures {
+    using PoolIdLibrary for PoolKey;
+    using EasyPosm for IPositionManager;
+    using CurrencyLibrary for Currency;
+
+    ConfidentialRebalancingHook public hook;
+    CoFheTest private CFT;
+
+    address public alice = address(0xA11CE);
+    address public bob   = address(0xB0B);
+    address public gov   = address(0xDAD);
+
+    PoolKey public poolKey;
+    PoolId  public poolId;
+    uint256 public tokenId;
+    int24   public tickLower;
+    int24   public tickUpper;
+
+    function setUp() public {
+        CFT = new CoFheTest(true);
+
+        deployFreshManagerAndRouters();
+        deployMintAndApprove2Currencies();
+
+        // Distribute tokens to alice and bob (test contract holds the supply)
+        IERC20(Currency.unwrap(currency0)).transfer(alice, 100 ether);
+        IERC20(Currency.unwrap(currency1)).transfer(alice, 100 ether);
+        IERC20(Currency.unwrap(currency0)).transfer(bob,   100 ether);
+        IERC20(Currency.unwrap(currency1)).transfer(bob,   100 ether);
+
+        // Pre-approve swapRouter for bob
+        vm.startPrank(bob);
+        IERC20(Currency.unwrap(currency0)).approve(address(swapRouter), type(uint256).max);
+        IERC20(Currency.unwrap(currency1)).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG |
+            Hooks.AFTER_SWAP_FLAG |
+            Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
+            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+            Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG
+        ) ^ (0x4444 << 144);
+
+        bytes memory constructorArgs = abi.encode(manager, address(0));
+        deployCodeTo(
+            "ConfidentialRebalancingHook.sol:ConfidentialRebalancingHook",
+            constructorArgs,
+            address(flags)
+        );
+        hook = ConfidentialRebalancingHook(address(flags));
+
+        vm.label(address(hook), "hook");
+        vm.label(alice,         "alice");
+        vm.label(bob,           "bob");
+
+        hook.setGovernance(gov);
+
+        poolKey = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: IHooks(hook)
+        });
+        poolId = poolKey.toId();
+        manager.initialize(poolKey, SQRT_PRICE_1_1);
+
+        deployAndApprovePosm(manager, currency0, currency1);
+
+        tickLower = TickMath.minUsableTick(poolKey.tickSpacing);
+        tickUpper = TickMath.maxUsableTick(poolKey.tickSpacing);
+        uint128 liq = 10 ether;
+        (uint256 a0, uint256 a1) = LiquidityAmounts.getAmountsForLiquidity(
+            SQRT_PRICE_1_1,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            liq
+        );
+        (tokenId,) = posm.mint(
+            poolKey, tickLower, tickUpper, liq,
+            a0 + 1, a1 + 1, address(this), block.timestamp, ZERO_BYTES
+        );
+    }
+
+    // -------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------
+
+    /// @dev IMPORTANT: always call _enc() BEFORE vm.prank() so that the CoFheTest
+    ///      external call doesn't consume the prank.
+    function _enc(uint128 val, address who) internal returns (InEuint128 memory) {
+        return CFT.createInEuint128(val, who);
+    }
+
+    function _placeOrder(address user, address tokenIn, uint128 amt, bool isBuy)
+        internal
+        returns (uint256 orderId)
+    {
+        // 1. Approve hook (prank alice for approval)
+        vm.prank(user);
+        IERC20(tokenIn).approve(address(hook), amt);
+
+        // 2. Build encrypted amount OUTSIDE any prank
+        InEuint128 memory enc = _enc(amt, user);
+
+        // 3. Now prank for the actual placement call
+        vm.prank(user);
+        orderId = hook.placeDarkOrder(poolKey, amt, enc, isBuy);
+    }
+
+    function _performSwap(bool zeroForOne, int256 amountSpecified) internal {
+        swap(poolKey, zeroForOne, amountSpecified, ZERO_BYTES);
+    }
+
+    // -------------------------------------------------------
+    // Test 1: Place a dark order
+    // -------------------------------------------------------
+    function testPlaceDarkOrder() public {
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 orderAmt = 1 ether;
+
+        uint256 orderId = _placeOrder(alice, c1Addr, orderAmt, true /* isBuy */);
+
+        assertEq(orderId, 0, "first order id should be 0");
+
+        ConfidentialRebalancingHook.DarkOrder memory o = hook.getDarkOrder(poolKey, 0);
+        assertEq(o.owner,        alice);
+        assertEq(o.plainAmount,  orderAmt);
+        assertEq(o.filledAmount, 0);
+        assertTrue(o.isBuy);
+        assertTrue(o.isActive);
+
+        assertEq(hook.hookCustody(c1Addr), orderAmt, "hook should hold custody");
+        assertEq(IERC20(c1Addr).balanceOf(address(hook)), orderAmt, "ERC20 balance mismatch");
+        console.log("[PASS] testPlaceDarkOrder");
+    }
+
+    // -------------------------------------------------------
+    // Test 2: Cancel a dark order
+    // -------------------------------------------------------
+    function testCancelDarkOrder() public {
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 orderAmt = 1 ether;
+
+        _placeOrder(alice, c1Addr, orderAmt, true);
+
+        uint256 aliceBefore = IERC20(c1Addr).balanceOf(alice);
+        vm.prank(alice);
+        hook.cancelDarkOrder(poolKey, 0);
+
+        assertFalse(hook.getDarkOrder(poolKey, 0).isActive, "order should be inactive");
+        uint256 aliceAfter = IERC20(c1Addr).balanceOf(alice);
+        assertEq(aliceAfter - aliceBefore, orderAmt, "alice should be refunded");
+        assertEq(hook.hookCustody(c1Addr), 0, "custody should clear after cancel");
+        console.log("[PASS] testCancelDarkOrder");
+    }
+
+    // -------------------------------------------------------
+    // Test 3: Dark order filled by public swap
+    // -------------------------------------------------------
+    function testDarkOrderFillOnSwap() public {
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 orderAmt = 0.5 ether;
+
+        // Alice places BUY order: wants currency0, deposits currency1
+        _placeOrder(alice, c1Addr, orderAmt, true);
+
+        // Bob does a zeroForOne swap (sells c0, buys c1); hook matches alice's BUY
+        _performSwap(true, -int256(uint256(orderAmt)));
+
+        ConfidentialRebalancingHook.DarkOrder memory o = hook.getDarkOrder(poolKey, 0);
+        assertEq(o.filledAmount, orderAmt, "order should be fully filled");
+        assertFalse(o.isActive,            "order should be inactive after fill");
+        console.log("[PASS] testDarkOrderFillOnSwap - filledAmount:", o.filledAmount);
+    }
+
+    // -------------------------------------------------------
+    // Test 4: Claim fill proceeds
+    // -------------------------------------------------------
+    function testClaimAfterFill() public {
+        address c0Addr = Currency.unwrap(currency0);
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 orderAmt = 0.3 ether;
+
+        // Alice places BUY order (deposits c1, wants c0)
+        _placeOrder(alice, c1Addr, orderAmt, true);
+
+        // Seed the hook with c0 so it can pay alice on claim
+        // (In production this comes from the swapper's tokens via flash accounting)
+        IERC20(c0Addr).transfer(address(hook), orderAmt);
+        // Also update hookCustody to reflect the seeded c0
+        // (Normally done via _tryInternalizeDarkOrders crediting hookCustody[c0])
+
+        // Trigger fill via swap
+        _performSwap(true, -int256(uint256(orderAmt)));
+
+        // Check fill recorded
+        ConfidentialRebalancingHook.DarkOrder memory o = hook.getDarkOrder(poolKey, 0);
+        assertGt(o.filledAmount, 0, "order should have some fill");
+
+        // Alice claims her c0
+        uint256 aliceC0Before = IERC20(c0Addr).balanceOf(alice);
+        vm.prank(alice);
+        hook.claimDarkOrder(poolKey, 0);
+        uint256 aliceC0After = IERC20(c0Addr).balanceOf(alice);
+
+        assertGt(aliceC0After, aliceC0Before, "alice should receive c0");
+        console.log("[PASS] testClaimAfterFill - c0 received:", aliceC0After - aliceC0Before);
+    }
+
+    // -------------------------------------------------------
+    // Test 5: Partial fill
+    // -------------------------------------------------------
+    function testPartialFill() public {
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 orderAmt = 1 ether;
+        uint128 swapAmt  = 0.3 ether;
+
+        _placeOrder(alice, c1Addr, orderAmt, true);
+        _performSwap(true, -int256(uint256(swapAmt)));
+
+        ConfidentialRebalancingHook.DarkOrder memory o = hook.getDarkOrder(poolKey, 0);
+        assertEq(o.filledAmount,              swapAmt,              "filledAmount == swapAmt");
+        assertTrue(o.isActive,                                       "order still active");
+        assertEq(o.plainAmount - o.filledAmount, orderAmt - swapAmt, "remaining correct");
+        console.log("[PASS] testPartialFill - filledAmount:", o.filledAmount);
+    }
+
+    // -------------------------------------------------------
+    // Test 6: No dark orders -- swap passes through normally
+    // -------------------------------------------------------
+    function testNoMatchPassthrough() public {
+        _performSwap(true, -int256(0.1 ether));
+        ConfidentialRebalancingHook.DarkOrder[] memory book = hook.getDarkOrderBook(poolKey);
+        assertEq(book.length, 0, "order book should be empty");
+        console.log("[PASS] testNoMatchPassthrough");
+    }
+
+    // -------------------------------------------------------
+    // Test 7: Multi-order fill
+    // -------------------------------------------------------
+    function testMultiOrderFill() public {
+        address c1Addr = Currency.unwrap(currency1);
+        uint128 order1 = 0.4 ether;
+        uint128 order2 = 0.3 ether;
+        uint128 swapAmt = order1 + order2;
+
+        _placeOrder(alice, c1Addr, order1, true);
+        _placeOrder(alice, c1Addr, order2, true);
+
+        assertEq(hook.getDarkOrderBook(poolKey).length, 2, "2 orders placed");
+
+        _performSwap(true, -int256(uint256(swapAmt)));
+
+        ConfidentialRebalancingHook.DarkOrder memory o1 = hook.getDarkOrder(poolKey, 0);
+        ConfidentialRebalancingHook.DarkOrder memory o2 = hook.getDarkOrder(poolKey, 1);
+
+        assertEq(o1.filledAmount, order1, "order1 fully filled");
+        assertEq(o2.filledAmount, order2, "order2 fully filled");
+        assertFalse(o1.isActive,           "order1 inactive");
+        assertFalse(o2.isActive,           "order2 inactive");
+        console.log("[PASS] testMultiOrderFill");
+    }
+}

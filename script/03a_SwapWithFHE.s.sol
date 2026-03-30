@@ -147,9 +147,9 @@ contract SwapWithFHEScript is Script, Constants, Config {
         );
         PoolId[] memory pools = new PoolId[](1);
         pools[0] = poolId;
-        hook.enableCrossPoolCoordination(strategyId, pools);
+        // hook.enableCrossPoolCoordination(strategyId, pools);
         console.log(
-            "Pool registered to strategy - hook will execute during swaps"
+            "Note: Cross-pool coordination removed for size optimization"
         );
 
         // Step 3: Approve tokens for swap

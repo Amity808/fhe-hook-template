@@ -36,7 +36,7 @@ const CONFIG = {
 
   // Contract addresses from deployment (Sepolia chain ID: 11155111)
   HOOK_ADDRESS:
-    process.env.HOOK_ADDRESS || "0x8854D46548cff10d1f72dB3800b15fE218094ac8", // Dark Pool Hook (newly deployed)
+    process.env.HOOK_ADDRESS || "0x797283907437277Ff05FF929c871f7517BdecaC0", // Umbra Finance Hook with FHE timing fix
   POOL_MANAGER_ADDRESS:
     process.env.POOL_MANAGER_ADDRESS ||
     "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543", // Uniswap V4 PoolManager
@@ -57,7 +57,6 @@ const MIN_PRICE_LIMIT = 4295128740n;
 const MAX_PRICE_LIMIT = 1461446703485210103287273052203988822378723970341n;
 
 const HOOK_ABI = [
-  // ── Rebalancing Strategy functions ────────────────────────────────────
   "function createStrategy(bytes32 strategyId, uint256 rebalanceFrequency, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) executionWindow, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) spreadBlocks, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) maxSlippage) external returns (bool)",
   "function setTargetAllocation(bytes32 strategyId, address currency, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) targetPercentage, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) minThreshold, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) maxThreshold) external",
   "function setEncryptedPosition(bytes32 strategyId, address currency, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) position) external",
@@ -68,18 +67,6 @@ const HOOK_ABI = [
   "function calculateRebalancing(bytes32 strategyId) external returns (bool)",
   "event RebalancingExecuted(bytes32 indexed strategyId, uint256 blockNumber)",
   "event FHEOperationFailed(bytes32 indexed strategyId, string operation, string reason)",
-
-  // ── Dark Pool Internalization functions ───────────────────────────────
-  "function placeDarkOrder(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, uint128 plainAmount, tuple(uint256 ctHash, uint8 securityZone, uint8 utype, bytes signature) encAmount, bool isBuy) external payable returns (uint256 orderId)",
-  "function cancelDarkOrder(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, uint256 orderId) external",
-  "function claimDarkOrder(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, uint256 orderId) external",
-  "function getDarkOrderBook(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey) external view returns (tuple(address owner, uint256 encryptedAmount, uint128 plainAmount, uint128 filledAmount, bool isBuy, bool isActive)[])",
-  "function getDarkOrder(tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, uint256 orderId) external view returns (tuple(address owner, uint256 encryptedAmount, uint128 plainAmount, uint128 filledAmount, bool isBuy, bool isActive))",
-  "function hookCustody(address token) external view returns (uint256)",
-  "event DarkOrderPlaced(bytes32 indexed poolId, uint256 orderId, address owner, bool isBuy)",
-  "event DarkOrderFilled(bytes32 indexed poolId, uint256 orderId, uint128 matchedAmount)",
-  "event DarkOrderCancelled(bytes32 indexed poolId, uint256 orderId)",
-  "event DarkOrderClaimed(bytes32 indexed poolId, uint256 orderId, uint128 claimedAmount)",
 ];
 
 const ERC20_ABI = [
@@ -843,26 +830,11 @@ async function performSwap(
     );
 
     console.log("\n  === FHE Operations Status ===");
-    // Parse logs for Dark Pool events
-    for (const log of receipt.logs) {
-      try {
-        if (log.address.toLowerCase() === CONFIG.HOOK_ADDRESS.toLowerCase()) {
-          const parsed = hookInterface.parseLog({ topics: log.topics, data: log.data });
-          if (parsed && parsed.name === "DarkOrderFilled") {
-            console.log(`  ✨ DARK POOL MATCH! Order #${parsed.args.orderId} filled with ${ethers.formatEther(parsed.args.matchedAmount)} tokens`);
-          }
-          if (parsed && parsed.name === "FHEOperationFailed") {
-            console.log(`  ⚠ FHE Op Failed: ${parsed.args.operation} - ${parsed.args.reason}`);
-          }
-        }
-      } catch (e) { /* skip */ }
-    }
-
     if (rebalancingExecuted) {
       console.log("  ✓ FHE operations CONFIRMED via RebalancingExecuted event");
     } else if (fheOperationsDetected) {
       console.log(
-        "  ✓ Hook was called - FHE operations matched successfully!"
+        "  ✓ Hook was called - FHE operations likely executed (check events for confirmation)"
       );
     } else {
       console.log(
@@ -935,150 +907,6 @@ async function enableCrossPoolCoordination(contract, strategyId, poolIds) {
   );
 }
 
-// =========================================================================
-//  DARK POOL INTEGRATION FUNCTIONS
-// =========================================================================
-
-/**
- * Place a confidential dark order. The order amount is FHE-encrypted on-chain
- * so observers cannot see the order size.
- *
- * @param {ethers.Contract} contract  - Hook contract instance
- * @param {Object}          poolKey   - Uniswap v4 PoolKey
- * @param {bigint}          amount    - Order size in wei
- * @param {boolean}         isBuy     - true = buy currency0 (deposit c1), false = sell c0 (deposit c0)
- * @returns {number}        orderId   - Index in the dark order book
- */
-async function placeDarkOrder(contract, poolKey, amount, isBuy) {
-  console.log("\n=== Placing Encrypted Dark Order ===");
-  console.log(`  Direction: ${isBuy ? "BUY c0 (deposit c1)" : "SELL c0 (deposit c0)"}`);
-  console.log(`  Amount: ${ethers.formatEther(amount)} tokens`);
-
-  // 1. Encrypt the order amount via cofhejs
-  console.log("  Encrypting order amount via FHE...");
-  const encryptedValues = await cofhejs.encrypt(
-    [Encryptable.uint128(amount)],
-    logEncryptState
-  );
-
-  const encryptedArray = Array.isArray(encryptedValues)
-    ? encryptedValues
-    : encryptedValues?.data || encryptedValues;
-  if (!encryptedArray || !Array.isArray(encryptedArray) || encryptedArray.length < 1) {
-    throw new Error("Failed to encrypt dark order amount");
-  }
-
-  const encAmount = encryptedArray[0];
-  console.log("  ✓ Order amount encrypted");
-
-  // 2. Send the transaction
-  console.log("  Submitting placeDarkOrder...");
-  const tx = await contract.placeDarkOrder(
-    poolKey,
-    amount,      // plainAmount (uint128)
-    encAmount,   // FHE-encrypted InEuint128
-    isBuy,
-    { gasLimit: 2_000_000 }
-  );
-
-  console.log(`  Transaction hash: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`  ✓ Gas used: ${receipt.gasUsed.toString()}`);
-
-  // 3. Parse the DarkOrderPlaced event to get orderId
-  const hookInterface = new ethers.Interface(HOOK_ABI);
-  let orderId = null;
-  for (const log of receipt.logs) {
-    try {
-      const parsed = hookInterface.parseLog({ topics: log.topics, data: log.data });
-      if (parsed && parsed.name === "DarkOrderPlaced") {
-        orderId = Number(parsed.args.orderId);
-        console.log(`  ✓ Dark order placed! orderId=${orderId}`);
-        break;
-      }
-    } catch (e) { /* skip unparseable logs */ }
-  }
-
-  if (orderId === null) {
-    console.log("  ⚠ Could not parse orderId from logs (tx may still be valid)");
-    orderId = 0;
-  }
-
-  return orderId;
-}
-
-/**
- * Cancel an active dark order and reclaim deposited tokens.
- */
-async function cancelDarkOrder(contract, poolKey, orderId) {
-  console.log(`\n=== Cancelling Dark Order #${orderId} ===`);
-
-  const tx = await contract.cancelDarkOrder(poolKey, orderId, { gasLimit: 500_000 });
-  console.log(`  Transaction hash: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`  ✓ Order #${orderId} cancelled, tokens refunded (gas: ${receipt.gasUsed})`);
-}
-
-/**
- * Claim output tokens from a filled dark order.
- */
-async function claimDarkOrder(contract, poolKey, orderId) {
-  console.log(`\n=== Claiming Dark Order #${orderId} ===`);
-
-  const tx = await contract.claimDarkOrder(poolKey, orderId, { gasLimit: 500_000 });
-  console.log(`  Transaction hash: ${tx.hash}`);
-  const receipt = await tx.wait();
-
-  // Parse DarkOrderClaimed event
-  const hookInterface = new ethers.Interface(HOOK_ABI);
-  for (const log of receipt.logs) {
-    try {
-      const parsed = hookInterface.parseLog({ topics: log.topics, data: log.data });
-      if (parsed && parsed.name === "DarkOrderClaimed") {
-        console.log(`  ✓ Claimed ${ethers.formatEther(parsed.args.claimedAmount)} tokens`);
-        return;
-      }
-    } catch (e) { /* skip */ }
-  }
-  console.log(`  ✓ Claim processed (gas: ${receipt.gasUsed})`);
-}
-
-/**
- * Read and display the full dark order book for a pool.
- */
-async function viewDarkOrderBook(contract, poolKey) {
-  console.log("\n=== Dark Order Book ===");
-
-  try {
-    const orders = await contract.getDarkOrderBook(poolKey);
-    if (orders.length === 0) {
-      console.log("  (empty - no orders)");
-      return [];
-    }
-
-    for (let i = 0; i < orders.length; i++) {
-      const o = orders[i];
-      const side = o.isBuy ? "BUY" : "SELL";
-      const status = o.isActive ? "ACTIVE" : "INACTIVE";
-      const remaining = BigInt(o.plainAmount) - BigInt(o.filledAmount);
-      
-      // o.encryptedAmount is the ctHash (uint256) of the ciphertext
-      const encHash = o.encryptedAmount ? o.encryptedAmount.toString().slice(0, 16) + "..." : "none";
-
-      console.log(
-        `  #${i} | ${side} | ${status} | hash: ${encHash} | ` +
-        `plain: ${ethers.formatEther(o.plainAmount)} | filled: ${ethers.formatEther(o.filledAmount)} | ` +
-        `remaining: ${ethers.formatEther(remaining)}`
-      );
-    }
-
-    return orders;
-  } catch (error) {
-    console.log(`  ⚠ Could not read order book: ${error.message}`);
-    return [];
-  }
-}
-
 async function main() {
   console.log("=== FHE Hook Frontend Integration Example ===\n");
 
@@ -1126,7 +954,7 @@ async function main() {
     wallet
   );
 
-  const strategyId = ethers.keccak256(ethers.toUtf8Bytes("my-strategy-005"));
+  const strategyId = ethers.keccak256(ethers.toUtf8Bytes("my-strategy-001"));
 
   try {
     const strategyCreated = await createStrategy(
@@ -1276,97 +1104,13 @@ async function main() {
       strategyId
     );
 
-    // ================================================================
-    //  DARK POOL INTEGRATION
-    // ================================================================
-    console.log("\n" + "=".repeat(60));
-    console.log("  DARK POOL INTERNALIZATION");
-    console.log("=".repeat(60));
-
-    // View the order book before placing any orders
-    await viewDarkOrderBook(hookContract, poolKey);
-
-    // Approve hook to spend currency1 (for BUY order deposit)
-    const darkOrderAmount = ethers.parseEther("0.05"); // 0.05 tokens
-    const depositToken = poolKey.currency1; // BUY order deposits c1
-    console.log(`\n  Approving hook to spend ${ethers.formatEther(darkOrderAmount)} of currency1...`);
-    await approveTokensIfNeeded(
-      provider,
-      wallet,
-      depositToken,
-      CONFIG.HOOK_ADDRESS,
-      "Currency1 (for dark order)"
-    );
-
-    // Place a BUY dark order (encrypted amount)
-    const orderId = await placeDarkOrder(
-      hookContract,
-      poolKey,
-      darkOrderAmount,
-      true  // isBuy = true -> deposit c1, want c0
-    );
-
-    // View order book after placement
-    await viewDarkOrderBook(hookContract, poolKey);
-
-    // Perform a zeroForOne swap to trigger dark order matching
-    console.log("\n=== Swap to Trigger Dark Pool Match ===");
-    console.log("  A zeroForOne swap (selling c0) should match the BUY dark order.");
-    const matchSwapAmount = ethers.parseEther("0.05");
-    await performSwap(
-      provider,
-      wallet,
-      CONFIG.SWAP_ROUTER_ADDRESS,
-      poolKey,
-      matchSwapAmount,
-      true,  // zeroForOne
-      strategyId
-    );
-
-    // Check order status after swap
-    console.log("\n=== Post-Swap Order Book ===");
-    await viewDarkOrderBook(hookContract, poolKey);
-
-    // Try to claim filled proceeds
-    console.log("\n=== Finalizing Dark Order #0 ===");
-    try {
-      const orderAfterSwap = await hookContract.getDarkOrder(poolKey, orderId);
-      const filled = BigInt(orderAfterSwap.filledAmount);
-      
-      if (filled > 0n) {
-        console.log(`  Order #${orderId} was matched for ${ethers.formatEther(filled)} tokens!`);
-        console.log("  Claiming proceeds from hook...");
-        
-        // Final robustness - handle claim revert gracefully
-        try {
-          const tx = await claimDarkOrder(hookContract, poolKey, orderId);
-          console.log(`  ✓ Successfully claimed filled tokens! (Tx: ${tx.hash})`);
-        } catch (err) {
-          console.log(`  ⚠ Manual claim failed: ${err.shortMessage || err.message}`);
-          console.log("  (The tokens are credited in hook state. This can be resolved on-chain.)");
-        }
-      } else {
-        console.log(`  Order #${orderId} was not matched. Reclaiming deposited tokens...`);
-        const tx = await cancelDarkOrder(hookContract, poolKey, orderId);
-        console.log(`  ✓ Order cancelled. Tokens returned. (Tx: ${tx.hash})`);
-      }
-    } catch (claimErr) {
-      console.log(`  ⚠ Error during order finalization: ${claimErr.message}`);
-    }
-
-    // Final summary
-    console.log("\n" + "=".repeat(60));
-    console.log("  ALL OPERATIONS COMPLETED");
-    console.log("=".repeat(60));
+    console.log("\n=== All operations completed successfully! ===");
     console.log("\n=== Summary ===");
     console.log("✓ Strategy created/configured with encrypted parameters");
     console.log("✓ Target allocations set");
     console.log("✓ Encrypted positions set");
     console.log("✓ Pool registered to strategy");
     console.log("✓ Swap executed - FHE operations triggered in hook");
-    console.log("✓ Dark order placed with FHE-encrypted amount");
-    console.log("✓ Swap triggered dark pool matching");
-    console.log("✓ Dark order claimed/cancelled");
   } catch (error) {
     console.error("\n=== Error occurred ===");
     console.error(error);
@@ -1392,12 +1136,4 @@ module.exports = {
   enableCrossPoolCoordination,
   performSwap,
   approveTokensIfNeeded,
-  // Dark Pool exports
-  placeDarkOrder,
-  cancelDarkOrder,
-  claimDarkOrder,
-  viewDarkOrderBook,
 };
-
-
-// i have nstall one new sdk npm i @cofhe/sdk we need to use to intract with our hook which is which better than the cofhejs/node using in the nodejs. so we will create another file name index-sdk.js and use the sdk to interact with the hook and 
